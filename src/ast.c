@@ -3,7 +3,7 @@
  * Features: Lexer, Parser (Recursive Descent), AST, CodeGen (x86_64), ELF Header
  */
 
-#include "libc.c"
+#include "minilib.c"
 #include "config.h"
 
 // --- Preprocessor ---
@@ -195,33 +195,47 @@ void push_src_state(char *resume_src) {
   src_stack[src_ptr++] = resume_src;
 }
 
-char *read_source_file_for_include(const char *path) {
-  int fd = openat(AT_FDCWD, path, O_RDONLY, 0);
+char *read_source_file_for_include(const char *path, int include_dir_only) {
+  int fd = -1;
   char *fallback = NULL;
   char *fallback_src = NULL;
   size_t cap = CC_CFG_IO_BUFFER_INIT;
   size_t len = 0;
   char *buf;
-  if (fd < 0) {
+  if (include_dir_only) {
     size_t n = strlen(path);
     fallback = malloc(n + 9);
     if (!fallback) return NULL;
     memcpy(fallback, "include/", 8);
     memcpy(fallback + 8, path, n + 1);
-    fd = openat(AT_FDCWD, fallback, O_RDONLY, 0);
+    fd = open(fallback, O_RDONLY, 0);
     if (fd < 0) {
-      fallback_src = malloc(n + 5);
-      if (!fallback_src) {
-        free(fallback);
-        return NULL;
-      }
-      memcpy(fallback_src, "src/", 4);
-      memcpy(fallback_src + 4, path, n + 1);
-      fd = openat(AT_FDCWD, fallback_src, O_RDONLY, 0);
+      free(fallback);
+      return NULL;
+    }
+  } else {
+    fd = open(path, O_RDONLY, 0);
+    if (fd < 0) {
+      size_t n = strlen(path);
+      fallback = malloc(n + 9);
+      if (!fallback) return NULL;
+      memcpy(fallback, "include/", 8);
+      memcpy(fallback + 8, path, n + 1);
+      fd = open(fallback, O_RDONLY, 0);
       if (fd < 0) {
-        free(fallback);
-        free(fallback_src);
-        return NULL;
+        fallback_src = malloc(n + 5);
+        if (!fallback_src) {
+          free(fallback);
+          return NULL;
+        }
+        memcpy(fallback_src, "src/", 4);
+        memcpy(fallback_src + 4, path, n + 1);
+        fd = open(fallback_src, O_RDONLY, 0);
+        if (fd < 0) {
+          free(fallback);
+          free(fallback_src);
+          return NULL;
+        }
       }
     }
   }
@@ -378,8 +392,10 @@ void next() {
     if (!strcmp(buf, "include")) {
       char *path = NULL;
       char *inc = NULL;
+      int include_dir_only = 0;
       while (*src == ' ' || *src == '\t') src++;
       if (*src == '"' || *src == '<') {
+        include_dir_only = (*src == '<');
         char term = (*src == '"') ? '"' : '>';
         char *start;
         int len;
@@ -400,7 +416,7 @@ void next() {
         eprintf("Error: malformed #include directive\n", 0, 0, 0, 0);
         exit(1);
       }
-      inc = read_source_file_for_include(path);
+      inc = read_source_file_for_include(path, include_dir_only);
       if (!inc) {
         eprintf("Error: cannot open include file: %s\n", (long)path, 0, 0, 0);
         exit(1);

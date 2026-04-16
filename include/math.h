@@ -1,2 +1,7 @@
-extern double fabs(double x);
-extern double pow(double x, double y);
+#ifndef CC_MATH_H
+#define CC_MATH_H
+
+double fabs(double x);
+double pow(double x, double y);
+
+#endif

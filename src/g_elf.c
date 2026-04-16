@@ -239,7 +239,7 @@ int emit_builtin_syscall_call(ElfCtx *c, const char *name) {
   else if (!strcmp(name, "close")) sysno = 3;
   else if (!strcmp(name, "mmap")) { sysno = 9; needs_r10 = 1; }
   else if (!strcmp(name, "munmap")) sysno = 11;
-  else if (!strcmp(name, "openat")) { sysno = 257; needs_r10 = 1; }
+  else if (!strcmp(name, "open")) sysno = 2;
   else if (!strcmp(name, "exit")) sysno = 60;
   if (sysno < 0) return 0;
 

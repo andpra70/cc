@@ -1,5 +1,3 @@
-#include "../include/ctype.h"
-
 int isspace(int c) {
   return c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == '\f' || c == '\v';
 }

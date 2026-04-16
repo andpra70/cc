@@ -1,10 +1,10 @@
 CC ?= cc
 CFLAGS ?= -O0
 
-cc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_ast.c src/libc.c
+cc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_ast.c src/minilib.c
 	$(CC) $(CFLAGS) src/cc.c -o cc
 
-cpu: src/cpu.c src/libc.c
+cpu: src/cpu.c src/minilib.c
 	$(CC) $(CFLAGS) src/cpu.c -o cpu -lm
 
 all: cc cpu

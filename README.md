@@ -17,7 +17,7 @@ Obiettivo pratico:
 - `src/g_ast.c`: emissione AST intermedia (llvm/simbolica).
 - `src/g_interpreter.c`: interprete AST.
 - `src/cpu.c`: runner per output `.llvm`.
-- `src/libc.c`: include wrapper verso `lib/libc.c`.
+- `src/minilib.c`: include wrapper verso `lib/minilib.c`.
 - `include/`: header minimi locali (`stdio.h`, `stdlib.h`, `string.h`, ecc.).
 - `lib/`: implementazioni C minimali di supporto.
 - `Makefile`: target build/test/self.
@@ -161,3 +161,13 @@ In generale va considerato un compilatore didattico/sperimentale, non un drop-in
 - Il codice privilegia auto-consistenza e self-hosting.
 - Le dipendenze standard sono minimizzate con header/lib locali.
 - In caso di regressioni, verificare prima `make self` e poi `make test`.
+
+## Header/lib locali (ANSI C + POSIX subset)
+
+Gli header in `include/` espongono un subset minimale ma coerente di API ANSI C/POSIX usate dal progetto, con include guard e tipi base (`size_t`, `ssize_t`, `off_t`, `mode_t`, `intptr_t`, ecc.).
+
+In particolare:
+- ANSI C (subset): `stddef.h`, `stdint.h`, `limits.h`, `ctype.h`, `string.h`, `stdlib.h`, `stdio.h`, `math.h`.
+- POSIX (subset): `unistd.h`, `fcntl.h`, `sys/types.h`, `sys/mman.h`.
+
+Le implementazioni minimali restano in `lib/` e sono pensate per semplicità e self-hosting, non come sostituto completo di una libc di sistema.

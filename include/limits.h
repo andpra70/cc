@@ -1,2 +1,15 @@
-#define INT32_MIN (-2147483647 - 1)
-#define INT32_MAX 2147483647
+#ifndef CC_LIMITS_H
+#define CC_LIMITS_H
+
+#define CHAR_BIT 8
+#define SCHAR_MIN (-128)
+#define SCHAR_MAX 127
+#define UCHAR_MAX 255
+
+#define INT_MIN (-2147483647 - 1)
+#define INT_MAX 2147483647
+
+#define LONG_MIN (-9223372036854775807L - 1L)
+#define LONG_MAX 9223372036854775807L
+
+#endif

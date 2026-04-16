@@ -640,7 +640,7 @@ static i64 call_builtin(const char *name, i64 *args, int argc) {
   if (!strcmp(name, "read") && argc >= 3) return (i64)read((int)args[0], (void *)(intptr_t)args[1], (size_t)args[2]);
   if (!strcmp(name, "write") && argc >= 3) return (i64)write((int)args[0], (const void *)(intptr_t)args[1], (size_t)args[2]);
   if (!strcmp(name, "open") && argc >= 3) return (i64)open((const char *)(intptr_t)args[0], (int)args[1], (int)args[2]);
-  if (!strcmp(name, "openat") && argc >= 4) return (i64)openat((int)args[0], (const char *)(intptr_t)args[1], (int)args[2], (mode_t)args[3]);
+  if (!strcmp(name, "open") && argc >= 3) return (i64)open((const char *)(intptr_t)args[0], (int)args[1], (mode_t)args[2]);
   if (!strcmp(name, "close") && argc >= 1) return (i64)close((int)args[0]);
   if (!strcmp(name, "mmap") && argc >= 6) return (i64)(intptr_t)mmap((void *)(intptr_t)args[0], (size_t)args[1], (int)args[2], (int)args[3], (int)args[4], (off_t)args[5]);
   if (!strcmp(name, "munmap") && argc >= 2) return (i64)munmap((void *)(intptr_t)args[0], (size_t)args[1]);

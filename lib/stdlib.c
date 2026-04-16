@@ -1,92 +1,42 @@
-#include "../include/stdlib.h"
-#include "../include/ctype.h"
-#include "../include/string.h"
-#include "../include/stdint.h"
-#include "../include/fcntl.h"
-#include "../include/unistd.h"
-#include "../include/sys/mman.h"
-
-#define HEAP_SIZE (1024 * 1024 * 64)
-
-typedef struct Block {
-  size_t sz;
-  int free;
-  struct Block *next;
-} Block;
-
-static Block *heap_list;
-static void *heap_base;
-static size_t heap_used;
-
-static int heap_init(void) {
-  if (heap_base) return 1;
-  heap_base = mmap((void *)0, HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if ((long)heap_base <= 0) return 0;
-  heap_used = 0;
-  heap_list = (Block *)0;
-  return 1;
-}
-
-static void *heap_alloc(size_t n) {
-  void *p;
-  if (!heap_init()) return (void *)0;
-  if (heap_used + n > HEAP_SIZE) return (void *)0;
-  p = (void *)((unsigned char *)heap_base + heap_used);
-  heap_used += n;
-  return p;
-}
-
 void *malloc(size_t n) {
-  Block *b;
-  size_t need;
-  if (!n) n = 1;
-  b = heap_list;
-  while (b) {
-    if (b->free && b->sz >= n) {
-      b->free = 0;
-      return (void *)(b + 1);
-    }
-    b = b->next;
-  }
-  need = sizeof(Block) + n;
-  b = (Block *)heap_alloc(need);
-  if (!b) return (void *)0;
-  b->sz = n;
-  b->free = 0;
-  b->next = heap_list;
-  heap_list = b;
-  return (void *)(b + 1);
+  size_t total;
+  size_t *base;
+  if (n == 0) n = 1;
+  total = n + sizeof(size_t);
+  if (total < 32) total = 32;
+  base = (size_t *)mmap(NULL, total, PROT_READ + PROT_WRITE, MAP_PRIVATE + MAP_ANONYMOUS, -1, 0);
+  if ((long)base < 0) return NULL;
+  base[0] = total;
+  return (void *)(base + 1);
 }
 
 void free(void *ptr) {
-  Block *b;
-  if (!ptr) return;
-  b = ((Block *)ptr) - 1;
-  b->free = 1;
+  (void)ptr;
+  /* Intentionally a no-op for self-host stability. */
 }
 
 void *calloc(size_t n, size_t sz) {
   size_t total = n * sz;
   void *p = malloc(total);
-  if (!p) return p;
+  if (!p) return NULL;
   memset(p, 0, total);
   return p;
 }
 
 void *realloc(void *ptr, size_t n) {
+  size_t *base;
+  size_t old_total, old_n, copy_n;
   void *np;
-  Block *b;
   if (!ptr) return malloc(n);
-  if (!n) {
-    free(ptr);
-    return (void *)0;
-  }
-  b = ((Block *)ptr) - 1;
-  if (b->sz >= n) return ptr;
+  if (n == 0) { free(ptr); return NULL; }
+  base = ((size_t *)ptr) - 1;
+  old_total = base[0];
+  old_n = old_total > sizeof(size_t) ? old_total - sizeof(size_t) : 0;
   np = malloc(n);
-  if (!np) return (void *)0;
-  memcpy(np, ptr, b->sz);
-  free(ptr);
+  if (!np) return NULL;
+  copy_n = old_n < n ? old_n : n;
+  memcpy(np, ptr, copy_n);
+  /* Keep old block alive (no-op free), return the new buffer. */
   return np;
 }
 
@@ -159,4 +109,8 @@ void qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const voi
     for (k = 0; k < size; k++) a[j * size + k] = tmp[k];
   }
   free(tmp);
+}
+
+void abort(void) {
+  exit(1);
 }
