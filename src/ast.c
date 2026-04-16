@@ -37,13 +37,74 @@ enum {
 
 typedef struct {
   int type;
-  double val;
+  long val;
   char *name;
 } Token;
 
 char *src;
 char *src_base;
 Token token;
+int parse_verbose = 0;
+
+char *tok_name(int t) {
+  switch (t) {
+    case TK_NUM: return (char *)"TK_NUM";
+    case TK_FLOAT_LIT: return (char *)"TK_FLOAT_LIT";
+    case TK_ID: return (char *)"TK_ID";
+    case TK_IF: return (char *)"TK_IF";
+    case TK_ELSE: return (char *)"TK_ELSE";
+    case TK_WHILE: return (char *)"TK_WHILE";
+    case TK_FOR: return (char *)"TK_FOR";
+    case TK_SWITCH: return (char *)"TK_SWITCH";
+    case TK_CASE: return (char *)"TK_CASE";
+    case TK_DEFAULT: return (char *)"TK_DEFAULT";
+    case TK_BREAK: return (char *)"TK_BREAK";
+    case TK_CONTINUE: return (char *)"TK_CONTINUE";
+    case TK_RETURN: return (char *)"TK_RETURN";
+    case TK_INT: return (char *)"TK_INT";
+    case TK_VOID: return (char *)"TK_VOID";
+    case TK_CHAR: return (char *)"TK_CHAR";
+    case TK_FLOAT: return (char *)"TK_FLOAT";
+    case TK_EQ: return (char *)"TK_EQ";
+    case TK_NE: return (char *)"TK_NE";
+    case TK_LE: return (char *)"TK_LE";
+    case TK_GE: return (char *)"TK_GE";
+    case TK_LOGIC_AND: return (char *)"TK_LOGIC_AND";
+    case TK_LOGIC_OR: return (char *)"TK_LOGIC_OR";
+    case TK_INC: return (char *)"TK_INC";
+    case TK_DEC: return (char *)"TK_DEC";
+    case TK_ARROW: return (char *)"TK_ARROW";
+    case TK_STR: return (char *)"TK_STR";
+    case TK_SIZEOF: return (char *)"TK_SIZEOF";
+    case TK_ADD_ASSIGN: return (char *)"TK_ADD_ASSIGN";
+    case TK_SUB_ASSIGN: return (char *)"TK_SUB_ASSIGN";
+    case TK_MUL_ASSIGN: return (char *)"TK_MUL_ASSIGN";
+    case TK_DIV_ASSIGN: return (char *)"TK_DIV_ASSIGN";
+    case TK_AND_ASSIGN: return (char *)"TK_AND_ASSIGN";
+    case TK_EOF: return (char *)"TK_EOF";
+    default: break;
+  }
+  return (char *)"TK_CHAR_OP";
+}
+
+void trace_token() {
+  return;
+  if (token.type == TK_ID || token.type == TK_STR) {
+    eprintf("[v] tok=%s(%d) off=%ld name=\"%s\"\n", (long)tok_name(token.type), token.type,
+            src_base ? (long)(src - src_base) : -1, (long)(token.name ? token.name : ""));
+    return;
+  }
+  if (token.type == TK_NUM || token.type == TK_FLOAT_LIT) {
+    eprintf("[v] tok=%s(%d) off=%ld val=%ld\n", (long)tok_name(token.type), token.type,
+            src_base ? (long)(src - src_base) : -1, token.val);
+    return;
+  }
+  if (token.type < 256) {
+    eprintf("[v] tok='%c'(%d) off=%ld\n", token.type, token.type, src_base ? (long)(src - src_base) : -1, 0);
+    return;
+  }
+  eprintf("[v] tok=%s(%d) off=%ld\n", (long)tok_name(token.type), token.type, src_base ? (long)(src - src_base) : -1, 0);
+}
 
 int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "TK_NUM")) { *out = TK_NUM; return 1; }
@@ -121,12 +182,13 @@ int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "ND_POST_DEC")) { *out = 37; return 1; }
   if (!strcmp(name, "ND_BNOT")) { *out = 38; return 1; }
   if (!strcmp(name, "ND_COMMA")) { *out = 39; return 1; }
+  if (!strcmp(name, "ND_BITOR")) { *out = 40; return 1; }
   return 0;
 }
 
 void push_src_state(char *resume_src) {
   if (src_ptr >= 64) {
-    eprintf("Error: preprocessor source stack overflow\n", 0, 0, 0, 0, 0, 0);
+    eprintf("Error: preprocessor source stack overflow\n", 0, 0, 0, 0);
     exit(1);
   }
   src_stack[src_ptr++] = resume_src;
@@ -134,13 +196,39 @@ void push_src_state(char *resume_src) {
 
 char *read_source_file_for_include(const char *path) {
   int fd = openat(AT_FDCWD, path, O_RDONLY, 0);
+  char *fallback = NULL;
+  char *fallback_src = NULL;
   size_t cap = 4096;
   size_t len = 0;
   char *buf;
-  if (fd < 0) return NULL;
+  if (fd < 0) {
+    size_t n = strlen(path);
+    fallback = malloc(n + 9);
+    if (!fallback) return NULL;
+    memcpy(fallback, "include/", 8);
+    memcpy(fallback + 8, path, n + 1);
+    fd = openat(AT_FDCWD, fallback, O_RDONLY, 0);
+    if (fd < 0) {
+      fallback_src = malloc(n + 5);
+      if (!fallback_src) {
+        free(fallback);
+        return NULL;
+      }
+      memcpy(fallback_src, "src/", 4);
+      memcpy(fallback_src + 4, path, n + 1);
+      fd = openat(AT_FDCWD, fallback_src, O_RDONLY, 0);
+      if (fd < 0) {
+        free(fallback);
+        free(fallback_src);
+        return NULL;
+      }
+    }
+  }
   buf = malloc(cap + 1);
   if (!buf) {
     close(fd);
+    if (fallback) free(fallback);
+    if (fallback_src) free(fallback_src);
     return NULL;
   }
   while (1) {
@@ -152,6 +240,8 @@ char *read_source_file_for_include(const char *path) {
       if (!nb) {
         free(buf);
         close(fd);
+        if (fallback) free(fallback);
+        if (fallback_src) free(fallback_src);
         return NULL;
       }
       buf = nb;
@@ -160,12 +250,16 @@ char *read_source_file_for_include(const char *path) {
     if (n < 0) {
       free(buf);
       close(fd);
+      if (fallback) free(fallback);
+      if (fallback_src) free(fallback_src);
       return NULL;
     }
     if (n == 0) break;
     len += (size_t)n;
   }
   close(fd);
+  if (fallback) free(fallback);
+  if (fallback_src) free(fallback_src);
   buf[len] = 0;
   return buf;
 }
@@ -199,19 +293,19 @@ void ensure_global_info_registry() {
   if (global_info_initialized) return;
   global_info_initialized = 1;
   register_global_info((char *)"macros", 0, (char *)"Macro", 1, 0, 8);
-  register_global_info((char *)"src_stack", 8, (char *)"char", 2, 1, 512);
-  register_global_info((char *)"src_ptr", 520, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"src", 528, (char *)"char", 1, 0, 8);
-  register_global_info((char *)"src_base", 536, (char *)"char", 1, 0, 8);
-  register_global_info((char *)"token", 544, (char *)"Token", 0, 0, 24);
-  register_global_info((char *)"locals", 568, (char *)"Symbol", 1, 0, 8);
-  register_global_info((char *)"local_stack_size", 576, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"str_lits", 584, (char *)"StrLit", 1, 0, 8);
-  register_global_info((char *)"n_str_lits", 592, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"cap_str_lits", 600, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"user_types", 608, (char *)"UserTypeDef", 1, 0, 8);
-  register_global_info((char *)"typedef_aliases", 616, (char *)"TypedefAlias", 1, 0, 8);
-  register_global_info((char *)"anon_type_counter", 624, (char *)"int", 0, 0, 8);
+  register_global_info((char *)"src_stack", 32, (char *)"char", 2, 1, 512);
+  register_global_info((char *)"src_ptr", 544, (char *)"int", 0, 0, 8);
+  register_global_info((char *)"src", 552, (char *)"char", 1, 0, 8);
+  register_global_info((char *)"src_base", 560, (char *)"char", 1, 0, 8);
+  register_global_info((char *)"token", 576, (char *)"Token", 0, 0, 24);
+  register_global_info((char *)"parse_verbose", 600, (char *)"int", 0, 0, 8);
+  register_global_info((char *)"global_info_defs", 608, (char *)"GlobalInfoDef", 1, 0, 8);
+  register_global_info((char *)"global_info_initialized", 616, (char *)"int", 0, 0, 8);
+  register_global_info((char *)"locals", 624, (char *)"Symbol", 1, 0, 8);
+  register_global_info((char *)"local_stack_size", 632, (char *)"int", 0, 0, 8);
+  register_global_info((char *)"user_types", 640, (char *)"UserTypeDef", 1, 0, 8);
+  register_global_info((char *)"typedef_aliases", 648, (char *)"TypedefAlias", 1, 0, 8);
+  register_global_info((char *)"anon_type_counter", 656, (char *)"int", 0, 0, 8);
 }
 
 int lookup_global_info(const char *name, int *offset, const char **type_name, int *ptr_level, int *is_array, int *bytes) {
@@ -257,7 +351,9 @@ void next() {
   }
   if (!*src) {
     if (src_ptr > 0) { src = src_stack[--src_ptr]; next(); return; }
-    token.type = TK_EOF; return;
+    token.type = TK_EOF;
+    trace_token();
+    return;
   }
 
   if (*src == '#') {
@@ -292,7 +388,7 @@ void next() {
         len = src - start;
         path = malloc(len + 1);
         if (!path) {
-          eprintf("Error: out of memory in #include\n", 0, 0, 0, 0, 0, 0);
+          eprintf("Error: out of memory in #include\n", 0, 0, 0, 0);
           exit(1);
         }
         memcpy(path, start, len);
@@ -300,12 +396,12 @@ void next() {
         if (*src == term) src++;
       }
       if (!path || !path[0]) {
-        eprintf("Error: malformed #include directive\n", 0, 0, 0, 0, 0, 0);
+        eprintf("Error: malformed #include directive\n", 0, 0, 0, 0);
         exit(1);
       }
       inc = read_source_file_for_include(path);
       if (!inc) {
-        eprintf("Error: cannot open include file: %s\n", (long)path, 0, 0, 0, 0, 0);
+        eprintf("Error: cannot open include file: %s\n", (long)path, 0, 0, 0);
         exit(1);
       }
       while (*src && *src != '\n') src++;
@@ -337,11 +433,23 @@ void next() {
       }
       token.type = TK_NUM;
       token.val = v;
+      trace_token();
       return;
     }
-    char *start = src;
-    token.val = strtod(src, &src);
-    token.type = (strchr(start, '.') && src > strchr(start, '.')) ? TK_FLOAT_LIT : TK_NUM;
+    long v = 0;
+    int is_float = 0;
+    while (isdigit(*src)) {
+      v = v * 10 + (*src - '0');
+      src++;
+    }
+    if (*src == '.') {
+      is_float = 1;
+      src++;
+      while (isdigit(*src)) src++;
+    }
+    token.val = v;
+    token.type = is_float ? TK_FLOAT_LIT : TK_NUM;
+    trace_token();
     return;
   }
 
@@ -353,6 +461,8 @@ void next() {
       if (*src == 'n') { v = '\n'; src++; }
       else if (*src == 't') { v = '\t'; src++; }
       else if (*src == 'r') { v = '\r'; src++; }
+      else if (*src == 'f') { v = '\f'; src++; }
+      else if (*src == 'v') { v = '\v'; src++; }
       else if (*src == '0') { v = '\0'; src++; }
       else if (*src) { v = (unsigned char)*src; src++; }
     } else if (*src) {
@@ -362,6 +472,7 @@ void next() {
     if (*src == '\'') src++;
     token.type = TK_NUM;
     token.val = v;
+    trace_token();
     return;
   }
 
@@ -388,8 +499,8 @@ void next() {
     else if (!strcmp(name, "NULL")) { token.type = TK_NUM; token.val = 0; }
     else if (!strcmp(name, "SEEK_SET")) { token.type = TK_NUM; token.val = 0; }
     else if (!strcmp(name, "SEEK_END")) { token.type = TK_NUM; token.val = 2; }
-    else if (!strcmp(name, "INT32_MIN")) { token.type = TK_NUM; token.val = -2147483648.0; }
-    else if (!strcmp(name, "INT32_MAX")) { token.type = TK_NUM; token.val = 2147483647.0; }
+    else if (!strcmp(name, "INT32_MIN")) { token.type = TK_NUM; token.val = -2147483647 - 1; }
+    else if (!strcmp(name, "INT32_MAX")) { token.type = TK_NUM; token.val = 2147483647; }
     else if (!strcmp(name, "int")) token.type = TK_INT;
     else if (!strcmp(name, "char")) token.type = TK_CHAR;
     else if (!strcmp(name, "float")) token.type = TK_FLOAT;
@@ -399,6 +510,7 @@ void next() {
       if (lookup_named_constant(name, &cval)) {
         token.type = TK_NUM;
         token.val = cval;
+        trace_token();
         return;
       }
       char *body = find_macro(name);
@@ -410,6 +522,7 @@ void next() {
       }
       token.type = TK_ID;
     }
+    trace_token();
     return;
   }
 
@@ -427,32 +540,34 @@ void next() {
     if (*src == '"') src++;
     token.type = TK_STR;
     token.name = s;
+    trace_token();
     return;
   }
 
-  if (*src == '&' && src[1] == '&') { src += 2; token.type = TK_LOGIC_AND; return; }
-  if (*src == '|' && src[1] == '|') { src += 2; token.type = TK_LOGIC_OR; return; }
-  if (*src == '+' && src[1] == '=') { src += 2; token.type = TK_ADD_ASSIGN; return; }
-  if (*src == '-' && src[1] == '=') { src += 2; token.type = TK_SUB_ASSIGN; return; }
-  if (*src == '*' && src[1] == '=') { src += 2; token.type = TK_MUL_ASSIGN; return; }
-  if (*src == '/' && src[1] == '=') { src += 2; token.type = TK_DIV_ASSIGN; return; }
-  if (*src == '&' && src[1] == '=') { src += 2; token.type = TK_AND_ASSIGN; return; }
-  if (*src == '+' && src[1] == '+') { src += 2; token.type = TK_INC; return; }
-  if (*src == '-' && src[1] == '-') { src += 2; token.type = TK_DEC; return; }
-  if (*src == '-' && src[1] == '>') { src += 2; token.type = TK_ARROW; return; }
-  if (*src == '=' && src[1] == '=') { src += 2; token.type = TK_EQ; return; }
-  if (*src == '!' && src[1] == '=') { src += 2; token.type = TK_NE; return; }
-  if (*src == '<' && src[1] == '=') { src += 2; token.type = TK_LE; return; }
-  if (*src == '>' && src[1] == '=') { src += 2; token.type = TK_GE; return; }
+  if (*src == '&' && src[1] == '&') { src += 2; token.type = TK_LOGIC_AND; trace_token(); return; }
+  if (*src == '|' && src[1] == '|') { src += 2; token.type = TK_LOGIC_OR; trace_token(); return; }
+  if (*src == '+' && src[1] == '=') { src += 2; token.type = TK_ADD_ASSIGN; trace_token(); return; }
+  if (*src == '-' && src[1] == '=') { src += 2; token.type = TK_SUB_ASSIGN; trace_token(); return; }
+  if (*src == '*' && src[1] == '=') { src += 2; token.type = TK_MUL_ASSIGN; trace_token(); return; }
+  if (*src == '/' && src[1] == '=') { src += 2; token.type = TK_DIV_ASSIGN; trace_token(); return; }
+  if (*src == '&' && src[1] == '=') { src += 2; token.type = TK_AND_ASSIGN; trace_token(); return; }
+  if (*src == '+' && src[1] == '+') { src += 2; token.type = TK_INC; trace_token(); return; }
+  if (*src == '-' && src[1] == '-') { src += 2; token.type = TK_DEC; trace_token(); return; }
+  if (*src == '-' && src[1] == '>') { src += 2; token.type = TK_ARROW; trace_token(); return; }
+  if (*src == '=' && src[1] == '=') { src += 2; token.type = TK_EQ; trace_token(); return; }
+  if (*src == '!' && src[1] == '=') { src += 2; token.type = TK_NE; trace_token(); return; }
+  if (*src == '<' && src[1] == '=') { src += 2; token.type = TK_LE; trace_token(); return; }
+  if (*src == '>' && src[1] == '=') { src += 2; token.type = TK_GE; trace_token(); return; }
 
   token.type = *src++;
+  trace_token();
 }
 
 void expect(int type) {
   if (token.type != type) {
     long off = src_base ? (long)(src - src_base) : -1;
     const char *ctx = src;
-    eprintf("Error: Expected %d, got %d at offset %ld near \"%.40s\"\n", type, token.type, off, (long)(ctx ? ctx : ""), 0, 0);
+    eprintf("Error: Expected %d, got %d at offset %ld near \"%.40s\"\n", type, token.type, off, (long)(ctx ? ctx : ""));
     exit(1);
   }
   next();
@@ -465,6 +580,7 @@ typedef struct Symbol {
   int size;
   char *type_name;
   int ptr_level;
+  int is_array;
   struct Symbol *next;
 } Symbol;
 
@@ -489,6 +605,7 @@ Symbol *add_local_t(char *name, char *type_name, int ptr_level) {
   s->size = sz;
   s->type_name = type_name ? type_name : (char *)"int";
   s->ptr_level = ptr_level;
+  s->is_array = 0;
   s->next = locals;
   locals = s;
   return s;
@@ -508,6 +625,7 @@ Symbol *add_local_array_t(char *name, char *type_name, int elem_ptr_level, int a
   s->size = sz;
   s->type_name = type_name ? type_name : (char *)"int";
   s->ptr_level = elem_ptr_level + 1;
+  s->is_array = 1;
   s->next = locals;
   locals = s;
   return s;
@@ -521,7 +639,8 @@ Symbol *add_local(char *name) {
 typedef enum {
   ND_NUM, ND_ID, ND_ADD, ND_SUB, ND_MUL, ND_DIV, ND_EQ, ND_NE, ND_LT, ND_LE, 
   ND_GT, ND_GE, ND_AND, ND_OR, ND_BITAND, ND_ASSIGN, ND_IF, ND_WHILE, ND_FOR, ND_SWITCH, ND_CASE, ND_DEFAULT, ND_BREAK, ND_CONTINUE, ND_RETURN, 
-  ND_BLOCK, ND_FUNC, ND_CALL, ND_VAR, ND_ADDR, ND_DEREF, ND_NOT, ND_NEG, ND_TERNARY, ND_PRE_INC, ND_PRE_DEC, ND_POST_INC, ND_POST_DEC, ND_BNOT, ND_COMMA
+  ND_BLOCK, ND_FUNC, ND_CALL, ND_VAR, ND_ADDR, ND_DEREF, ND_NOT, ND_NEG, ND_TERNARY, ND_PRE_INC, ND_PRE_DEC, ND_POST_INC, ND_POST_DEC, ND_BNOT, ND_COMMA,
+  ND_BITOR
 } NodeKind;
 
 typedef struct Node {
@@ -535,29 +654,17 @@ typedef struct Node {
 } Node;
 
 Node *new_node(NodeKind kind) {
-  Node *node = calloc(1, sizeof(Node));
-  node->kind = kind;
-  return node;
+  long *raw = calloc(1, 120);
+  if (!raw) return NULL;
+  raw[0] = kind;
+  return (Node *)raw;
 }
 
 Node *clone_node_shallow(Node *src_node) {
-  Node *dst;
   if (!src_node) return NULL;
-  dst = new_node(src_node->kind);
-  dst->lhs = src_node->lhs;
-  dst->rhs = src_node->rhs;
-  dst->cond = src_node->cond;
-  dst->then = src_node->then;
-  dst->els = src_node->els;
-  dst->body = src_node->body;
-  dst->init = src_node->init;
-  dst->inc = src_node->inc;
-  dst->args = src_node->args;
-  dst->val = src_node->val;
-  dst->name = src_node->name;
-  dst->sym = src_node->sym;
-  dst->type_name = src_node->type_name;
-  dst->ptr_level = src_node->ptr_level;
+  Node *dst = calloc(1, 120);
+  if (!dst) return NULL;
+  memcpy(dst, src_node, 120);
   return dst;
 }
 
@@ -567,6 +674,7 @@ Node *stmt();
 Node *switch_stmt();
 Node *assign();
 int is_known_type_name(const char *s);
+Node *bit_or();
 
 int is_type_token(int t) {
   return t == TK_INT || t == TK_CHAR || t == TK_FLOAT || t == TK_VOID;
@@ -658,16 +766,19 @@ void register_typedef_alias(const char *name, const char *base_name, int ptr_lev
   }
   a->base_name = dup_cstr(base_name);
   a->ptr_level = ptr_level;
+  if (parse_verbose) eprintf("[v] typedef alias %s -> %s (ptr=%d)\n", (long)name, (long)base_name, ptr_level, 0);
 }
 
 int resolve_typedef_alias(const char *name, const char **base_name, int *ptr_level) {
   int extra = 0;
   const char *cur = name;
-  for (int depth = 0; depth < 16; depth++) {
+  int depth = 0;
+  while (depth < 16) {
     TypedefAlias *a = find_typedef_alias(cur);
     if (!a) break;
     extra += a->ptr_level;
     cur = a->base_name;
+    depth++;
   }
   if (!cur || !strcmp(cur, name)) return 0;
   if (base_name) *base_name = cur;
@@ -819,9 +930,23 @@ char *make_anon_type_name() {
       tmp[ti++] = (char)('0' + rem);
       n = q;
     }
-    for (int j = 0; j < ti / 2; j++) { char t = tmp[j]; tmp[j] = tmp[ti - j - 1]; tmp[ti - j - 1] = t; }
+    {
+      int j = 0;
+      while (j < ti / 2) {
+        char t = tmp[j];
+        tmp[j] = tmp[ti - j - 1];
+        tmp[ti - j - 1] = t;
+        j++;
+      }
+    }
   }
-  for (int j = 0; j < ti; j++) buf[i++] = tmp[j];
+  {
+    int j = 0;
+    while (j < ti) {
+      buf[i++] = tmp[j];
+      j++;
+    }
+  }
   buf[i] = 0;
   out = malloc(i + 1);
   memcpy(out, buf, i + 1);
@@ -833,6 +958,7 @@ int try_parse_typedef_or_record_decl() {
   Token saved_tok = token;
   int is_typedef = 0;
   int is_union = 0;
+  int is_enum = 0;
   char *tag_name = NULL;
   char *base_name = NULL;
   int saw_record = 0;
@@ -841,7 +967,9 @@ int try_parse_typedef_or_record_decl() {
     is_typedef = 1;
     next();
   }
-  if (token.type == TK_ID && token.name && (!strcmp(token.name, "struct") || !strcmp(token.name, "union"))) {
+  if (token.type == TK_ID && token.name &&
+      (!strcmp(token.name, "struct") || !strcmp(token.name, "union") || !strcmp(token.name, "enum"))) {
+    is_enum = !strcmp(token.name, "enum");
     is_union = !strcmp(token.name, "union");
     saw_record = 1;
     next();
@@ -853,16 +981,24 @@ int try_parse_typedef_or_record_decl() {
       TypeFieldDef *fields = NULL;
       int rsz = 0;
       next();
-      parse_record_fields(is_union, &fields, &rsz);
+      if (is_enum) {
+        while (token.type != TK_EOF && token.type != '}') next();
+        rsz = 4;
+      } else {
+        parse_record_fields(is_union, &fields, &rsz);
+      }
       expect('}');
-      if (!tag_name) tag_name = make_anon_type_name();
-      register_user_type(tag_name, rsz, is_union, fields);
+      if (!is_enum) {
+        if (!tag_name) tag_name = make_anon_type_name();
+        register_user_type(tag_name, rsz, is_union, fields);
+      }
     } else if (!is_typedef) {
       src = saved_src;
       token = saved_tok;
       return 0;
     }
-    base_name = tag_name;
+    if (is_enum) base_name = (char *)"int";
+    else base_name = tag_name;
   } else if (!is_typedef) {
     src = saved_src;
     token = saved_tok;
@@ -1266,7 +1402,7 @@ Node *primary() {
   }
   long off = src_base ? (long)(src - src_base) : -1;
   const char *ctx = src;
-  eprintf("Error: unsupported token in primary(): %d at offset %ld near \"%.40s\"\n", token.type, off, (long)(ctx ? ctx : ""), 0, 0, 0);
+  eprintf("Error: unsupported token in primary(): %d at offset %ld near \"%.40s\"\n", token.type, off, (long)(ctx ? ctx : ""), 0);
   exit(1);
 }
 
@@ -1543,9 +1679,23 @@ Node *bit_and() {
   return node;
 }
 
-Node *log_and() {
+Node *bit_or() {
   Node *node = bit_and();
-  while (token.type == TK_LOGIC_AND) { next(); Node *n = new_node(ND_AND); n->lhs = node; n->rhs = bit_and(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
+  while (token.type == '|') {
+    Node *n = new_node(ND_BITOR);
+    next();
+    n->lhs = node;
+    n->rhs = bit_and();
+    n->type_name = (char *)"int";
+    n->ptr_level = 0;
+    node = n;
+  }
+  return node;
+}
+
+Node *log_and() {
+  Node *node = bit_or();
+  while (token.type == TK_LOGIC_AND) { next(); Node *n = new_node(ND_AND); n->lhs = node; n->rhs = bit_or(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
   return node;
 }
 
@@ -1683,7 +1833,7 @@ Node *switch_stmt() {
       if (token.type == TK_CASE) {
         next();
         if (token.type != TK_NUM && token.type != TK_FLOAT_LIT) {
-          eprintf("Error: Expected case value\n", 0, 0, 0, 0, 0, 0);
+          eprintf("Error: Expected case value\n", 0, 0, 0, 0);
           exit(1);
         }
         label->val = (int)token.val;
@@ -1774,27 +1924,16 @@ Node *function() {
     return NULL;
   }
 
-  // Return type (tolerant)
-  while (is_decl_start_token()) {
-    if (is_type_token(token.type)) {
+  // Return type/declaration specifiers.
+  {
+    char *ret_base = NULL;
+    if (!parse_type_base_for_decl(&ret_base)) {
       next();
-      continue;
+      return NULL;
     }
-    if (token.type == TK_ID && token.name) {
-      if (!strcmp(token.name, "struct") || !strcmp(token.name, "enum")) {
-        next();
-        if (token.type == TK_ID) next();
-        continue;
-      }
-      if (is_type_qualifier_name(token.name) || is_known_type_name(token.name) ||
-          !strcmp(token.name, "long") || !strcmp(token.name, "short")) {
-        next();
-        continue;
-      }
-    }
-    break;
   }
-  while (token.type == '*') next();
+  while (token.type == '*') next(); // pointer return type
+
   if (token.type != TK_ID) {
     while (token.type != TK_EOF && token.type != ';') next();
     if (token.type == ';') next();
@@ -1803,6 +1942,7 @@ Node *function() {
 
   Node *node = new_node(ND_FUNC);
   node->name = token.name;
+  if (parse_verbose) eprintf("[v] parse function %s at off=%ld\n", (long)node->name, src_base ? (long)(src - src_base) : -1, 0, 0);
   next();
 
   // Not a function declaration/definition.
@@ -1812,44 +1952,52 @@ Node *function() {
     return NULL;
   }
 
-  // Tolerant parameter scan: capture the last identifier of each top-level
-  // parameter chunk, so argc/argv-like params become locals.
+  // Parameter scan for prototypes/definitions.
   next();
   Node phead = {0};
   Node *pcur = &phead;
   while (token.type != TK_EOF && token.type != ')') {
+    if (token.type == '.') {
+      int dots = 0;
+      while (token.type == '.' && dots < 3) { next(); dots++; } // varargs
+      while (token.type != TK_EOF && token.type != ')') next();
+      break;
+    }
+
     char *pname = NULL;
     char *ptype = (char *)"int";
     int pptr = 0;
-    int stars = 0;
     int depth = 0;
-    while (token.type != TK_EOF) {
-      if (token.type == '*') stars++;
-      if (is_type_token(token.type)) {
-        if (token.type == TK_CHAR) ptype = (char *)"char";
-        else if (token.type == TK_INT) ptype = (char *)"int";
-        else if (token.type == TK_FLOAT) ptype = (char *)"float";
-        else if (token.type == TK_VOID) ptype = (char *)"void";
-      } else if (token.type == TK_ID && token.name) {
-        if (!strcmp(token.name, "struct") || !strcmp(token.name, "enum")) {
-          next();
-          if (token.type == TK_ID) ptype = token.name;
-          continue;
-        } else if (is_known_type_name(token.name) || !strcmp(token.name, "long") || !strcmp(token.name, "short")) {
-          ptype = token.name;
-        } else if (!is_type_qualifier_name(token.name)) {
-          pname = token.name;
-          pptr = stars;
-        }
+
+    (void)parse_type_base_for_decl(&ptype);
+    while (token.type == '*') { pptr++; next(); }
+    if (token.type == TK_ID) {
+      pname = token.name;
+      next();
+    }
+    while (token.type == '[') {
+      pptr++; // array param decays to pointer
+      next();
+      if (token.type != ']') {
+        if (token.type == TK_NUM || token.type == TK_FLOAT_LIT) next();
+        else (void)expr();
       }
-      if (token.type == '(') depth++;
-      else if (token.type == ')') {
+      expect(']');
+    }
+
+    // Skip residual tokens in this parameter chunk (e.g. function pointers).
+    while (token.type != TK_EOF) {
+      if (token.type == '(') { depth++; next(); continue; }
+      if (token.type == ')') {
         if (depth == 0) break;
         depth--;
+        next();
+        continue;
       }
       if (depth == 0 && token.type == ',') break;
       next();
     }
+
     if (pname) {
       Symbol *ps = add_local_t(pname, ptype, pptr);
       Node *pn = new_node(ND_ID);
@@ -1879,10 +2027,12 @@ Node *function() {
     src = block_end;
     next();
     node->body = NULL;
+    node->val = local_stack_size;
     return node;
   }
 
   node->body = stmt();
+  node->val = local_stack_size;
   return node;
 }
 

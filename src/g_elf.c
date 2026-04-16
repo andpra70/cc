@@ -31,17 +31,15 @@ typedef struct {
   int capfixups;
   FnLabel *funcs;
   int nfuncs;
-  int break_labels[128];
+  int *break_labels;
   int break_top;
-  int continue_labels[128];
+  int *continue_labels;
   int continue_top;
   int ret_label;
   int globals_label;
+  StrLit *str_lits;
+  int n_str_lits;
 } ElfCtx;
-
-StrLit *str_lits = NULL;
-int n_str_lits = 0;
-int cap_str_lits = 0;
 
 void bb_reserve(BinBuf *b, size_t add) {
   if (b->len + add <= b->cap) return;
@@ -53,7 +51,8 @@ void bb_reserve(BinBuf *b, size_t add) {
 
 void bb_emit1(BinBuf *b, unsigned char v) {
   bb_reserve(b, 1);
-  b->data[b->len++] = v;
+  b->data[b->len] = v;
+  b->len = b->len + 1;
 }
 
 void bb_emit4(BinBuf *b, int32_t v) {
@@ -77,7 +76,8 @@ void ctx_ensure_labels(ElfCtx *c, int need) {
 }
 
 int ctx_new_label(ElfCtx *c) {
-  int id = c->nlabels++;
+  int id = c->nlabels;
+  c->nlabels = c->nlabels + 1;
   ctx_ensure_labels(c, c->nlabels);
   c->label_set[id] = 0;
   c->label_pos[id] = 0;
@@ -97,7 +97,7 @@ void ctx_add_fixup(ElfCtx *c, int label, size_t at) {
   }
   c->fixups[c->nfixups].label = label;
   c->fixups[c->nfixups].at = at;
-  c->nfixups++;
+  c->nfixups = c->nfixups + 1;
 }
 
 void emit_rel32_fixup(ElfCtx *c, int label) {
@@ -132,30 +132,26 @@ void emit_push_imm32(ElfCtx *c, int v) {
 }
 
 void reset_string_literals() {
-  if (str_lits) free(str_lits);
-  str_lits = NULL;
-  n_str_lits = 0;
-  cap_str_lits = 0;
+  // String literal table is now per-compilation in ElfCtx.
 }
 
 int get_string_label(ElfCtx *c, const char *s) {
-  for (int i = 0; i < n_str_lits; i++) {
-    if (!strcmp(str_lits[i].text, s)) return str_lits[i].label;
+  int i = 0;
+  while (i < c->n_str_lits) {
+    if (!strcmp(c->str_lits[i].text, s)) return c->str_lits[i].label;
+    i++;
   }
-  if (n_str_lits >= cap_str_lits) {
-    int ncap = cap_str_lits ? cap_str_lits * 2 : 64;
-    StrLit *ns = realloc(str_lits, sizeof(StrLit) * ncap);
-    if (!ns) {
-      eprintf("Error: out of memory for string literals\n", 0, 0, 0, 0, 0, 0);
-      exit(1);
-    }
-    str_lits = ns;
-    cap_str_lits = ncap;
+  if (c->n_str_lits >= 8192) {
+    eprintf("Error: too many string literals\n", 0, 0, 0, 0);
+    exit(1);
   }
-  str_lits[n_str_lits].text = (char *)s;
-  str_lits[n_str_lits].label = ctx_new_label(c);
-  n_str_lits++;
-  return str_lits[n_str_lits - 1].label;
+  {
+    int idx = c->n_str_lits;
+    c->str_lits[idx].text = (char *)s;
+    c->str_lits[idx].label = ctx_new_label(c);
+    c->n_str_lits = c->n_str_lits + 1;
+    return c->str_lits[idx].label;
+  }
 }
 
 void emit_push_string_addr(ElfCtx *c, const char *s) {
@@ -166,11 +162,13 @@ void emit_push_string_addr(ElfCtx *c, const char *s) {
 }
 
 void emit_string_literals(ElfCtx *c) {
-  for (int i = 0; i < n_str_lits; i++) {
-    const char *s = str_lits[i].text;
-    ctx_place_label(c, str_lits[i].label);
+  int i = 0;
+  while (i < c->n_str_lits) {
+    const char *s = c->str_lits[i].text;
+    ctx_place_label(c, c->str_lits[i].label);
     while (*s) bb_emit1(&c->code, (unsigned char)*s++);
     bb_emit1(&c->code, 0);
+    i++;
   }
 }
 
@@ -223,8 +221,10 @@ void emit_setcc_al(ElfCtx *c, unsigned char cc) {
 }
 
 int find_func_label(ElfCtx *c, const char *name) {
-  for (int i = 0; i < c->nfuncs; i++) {
+  int i = 0;
+  while (i < c->nfuncs) {
     if (!strcmp(c->funcs[i].name, name)) return c->funcs[i].label;
+    i++;
   }
   return -1;
 }
@@ -276,7 +276,8 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
       int goff = 0;
       int garr = 0;
       if (node->sym) {
-        emit_mov_rax_local(c, node->sym->offset);
+        if (node->sym->is_array) emit_lea_rax_local(c, node->sym->offset);
+        else emit_mov_rax_local(c, node->sym->offset);
       } else if (node->name && lookup_global_info(node->name, &goff, NULL, NULL, &garr, NULL)) {
         if (garr) emit_lea_rax_global(c, goff);
         else emit_mov_rax_global(c, goff);
@@ -349,11 +350,18 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
       }
     case ND_CALL: {
       int argc = 0;
-      for (Node *a = node->args; a; a = a->next) {
+      Node *a = node->args;
+      while (a) {
+        if (argc > 128) {
+          eprintf("Error: too many/cyclic args in call %s\n", (long)(node->name ? node->name : "(null)"), 0, 0, 0);
+          exit(1);
+        }
         emit_expr_elf(c, a);
         argc++;
+        a = a->next;
       }
-      for (int j = argc - 1; j >= 0; j--) {
+      int j = argc - 1;
+      while (j >= 0) {
         if (j == 0) bb_emit1(&c->code, 0x5f);          // pop rdi
         else if (j == 1) bb_emit1(&c->code, 0x5e);     // pop rsi
         else if (j == 2) bb_emit1(&c->code, 0x5a);     // pop rdx
@@ -361,6 +369,7 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
         else if (j == 4) { bb_emit1(&c->code, 0x41); bb_emit1(&c->code, 0x58); } // pop r8
         else if (j == 5) { bb_emit1(&c->code, 0x41); bb_emit1(&c->code, 0x59); } // pop r9
         else bb_emit1(&c->code, 0x58);                 // pop rax discard
+        j--;
       }
       if (emit_builtin_syscall_call(c, node->name)) {
         emit_push_rax(c);
@@ -515,6 +524,9 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
     case ND_BITAND:
       bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x21); bb_emit1(&c->code, 0xf8);
       break;
+    case ND_BITOR:
+      bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x09); bb_emit1(&c->code, 0xf8);
+      break;
     default:
       bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); // xor eax,eax
       break;
@@ -558,8 +570,10 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
     case ND_WHILE: {
       int l_begin = ctx_new_label(c);
       int l_end = ctx_new_label(c);
-      c->break_labels[c->break_top++] = l_end;
-      c->continue_labels[c->continue_top++] = l_begin;
+      c->break_labels[c->break_top] = l_end;
+      c->break_top = c->break_top + 1;
+      c->continue_labels[c->continue_top] = l_begin;
+      c->continue_top = c->continue_top + 1;
       ctx_place_label(c, l_begin);
       emit_expr_elf(c, node->cond);
       emit_pop_rax(c);
@@ -568,8 +582,8 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
       emit_stmt_elf(c, node->body);
       emit_jmp_label(c, l_begin);
       ctx_place_label(c, l_end);
-      c->continue_top--;
-      c->break_top--;
+      c->continue_top = c->continue_top - 1;
+      c->break_top = c->break_top - 1;
       return;
     }
     case ND_FOR: {
@@ -580,8 +594,10 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
         if (node->init->kind == ND_BLOCK) emit_stmt_elf(c, node->init);
         else emit_expr_discard_elf(c, node->init);
       }
-      c->break_labels[c->break_top++] = l_end;
-      c->continue_labels[c->continue_top++] = l_cont;
+      c->break_labels[c->break_top] = l_end;
+      c->break_top = c->break_top + 1;
+      c->continue_labels[c->continue_top] = l_cont;
+      c->continue_top = c->continue_top + 1;
       ctx_place_label(c, l_begin);
       if (node->cond) {
         emit_expr_elf(c, node->cond);
@@ -594,8 +610,8 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
       if (node->inc) emit_expr_discard_elf(c, node->inc);
       emit_jmp_label(c, l_begin);
       ctx_place_label(c, l_end);
-      c->continue_top--;
-      c->break_top--;
+      c->continue_top = c->continue_top - 1;
+      c->break_top = c->break_top - 1;
       return;
     }
     case ND_SWITCH: {
@@ -613,7 +629,8 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
         i++;
       }
       int l_end = ctx_new_label(c);
-      c->break_labels[c->break_top++] = l_end;
+      c->break_labels[c->break_top] = l_end;
+      c->break_top = c->break_top + 1;
 
       emit_expr_elf(c, node->cond);
       emit_pop_rax(c);
@@ -630,7 +647,7 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
         emit_stmt_list_elf(c, cases[i]->body);
       }
       ctx_place_label(c, l_end);
-      c->break_top--;
+      c->break_top = c->break_top - 1;
       free(labels);
       free(cases);
       return;
@@ -688,9 +705,13 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
   bb_emit1(&c->code, 0x55);                               // push rbp
   bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xe5); // mov rbp,rsp
 
-  int frame = max_node_offset(fn->fn->body);
-  int pmax = max_node_offset(fn->fn->args);
-  if (pmax > frame) frame = pmax;
+  int frame = fn->fn ? fn->fn->val : 0;
+  if (frame <= 0) {
+    int pmax;
+    frame = max_node_offset(fn->fn->body);
+    pmax = max_node_offset(fn->fn->args);
+    if (pmax > frame) frame = pmax;
+  }
   if (frame < 16) frame = 16;
   frame = (frame + 15) & ~15;
   bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x81); bb_emit1(&c->code, 0xec); bb_emit4(&c->code, frame); // sub rsp, imm32
@@ -705,7 +726,8 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
   bb_emit1(&c->code, 0x5f); // pop rdi
 
   int pi = 0;
-  for (Node *p = fn->fn->args; p && pi < 6; p = p->next, pi++) {
+  Node *p = fn->fn->args;
+  while (p && pi < 6) {
     if (pi == 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xf8); }      // mov rax,rdi
     else if (pi == 1) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xf0); } // mov rax,rsi
     else if (pi == 2) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xd0); } // mov rax,rdx
@@ -713,8 +735,9 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
     else if (pi == 4) { bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc0); } // mov rax,r8
     else if (pi == 5) { bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc8); } // mov rax,r9
     if (p->sym) emit_mov_local_rax(c, p->sym->offset);
+    p = p->next;
+    pi++;
   }
-
   c->ret_label = ctx_new_label(c);
   emit_stmt_elf(c, fn->fn->body);
   bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); // xor eax,eax default return
@@ -724,7 +747,8 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
 }
 
 int patch_fixups(ElfCtx *c) {
-  for (int i = 0; i < c->nfixups; i++) {
+  int i = 0;
+  while (i < c->nfixups) {
     int lbl = c->fixups[i].label;
     if (lbl < 0 || lbl >= c->nlabels || !c->label_set[lbl]) return 1;
     int64_t from = (int64_t)c->fixups[i].at + 4;
@@ -732,110 +756,149 @@ int patch_fixups(ElfCtx *c) {
     int64_t rel = to - from;
     if (rel < INT32_MIN || rel > INT32_MAX) return 1;
     bb_patch4(&c->code, c->fixups[i].at, (int32_t)rel);
+    i++;
   }
   return 0;
 }
 
-#pragma pack(push, 1)
-typedef struct {
-  unsigned char e_ident[16];
-  uint16_t e_type;
-  uint16_t e_machine;
-  uint32_t e_version;
-  uint64_t e_entry;
-  uint64_t e_phoff;
-  uint64_t e_shoff;
-  uint32_t e_flags;
-  uint16_t e_ehsize;
-  uint16_t e_phentsize;
-  uint16_t e_phnum;
-  uint16_t e_shentsize;
-  uint16_t e_shnum;
-  uint16_t e_shstrndx;
-} Ehdr64;
+void put_u16_le(unsigned char *p, uint16_t v) {
+  p[0] = (unsigned char)(v & 0xff);
+  p[1] = (unsigned char)((v / 256) & 0xff);
+}
 
-typedef struct {
-  uint32_t p_type;
-  uint32_t p_flags;
-  uint64_t p_offset;
-  uint64_t p_vaddr;
-  uint64_t p_paddr;
-  uint64_t p_filesz;
-  uint64_t p_memsz;
-  uint64_t p_align;
-} Phdr64;
-#pragma pack(pop)
+void put_u32_le(unsigned char *p, uint32_t v) {
+  int i = 0;
+  uint32_t x = v;
+  while (i < 4) {
+    p[i] = (unsigned char)(x & 0xff);
+    x = x / 256;
+    i++;
+  }
+}
 
-int write_elf_exec_stdout(BinBuf *code, size_t entry_off) {
+void put_u64_le(unsigned char *p, uint64_t v) {
+  int i = 0;
+  uint64_t x = v;
+  while (i < 8) {
+    p[i] = (unsigned char)(x & 0xff);
+    x = x / 256;
+    i++;
+  }
+}
+
+int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
   const uint64_t base = 0x400000;
   const size_t code_off = 0x1000;
   size_t file_size = code_off + code->len;
+  if (parse_verbose) eprintf("[v] elf: write begin code_len=%d file_size=%d\n", (int)code->len, (int)file_size, 0, 0);
   unsigned char *img = calloc(1, file_size);
   if (!img) return 1;
+  if (parse_verbose) eprintf("[v] elf: write calloc ok ptr=%ld\n", (long)img, 0, 0, 0);
 
-  Ehdr64 *eh = (Ehdr64 *)img;
-  Phdr64 *ph = (Phdr64 *)(img + sizeof(Ehdr64));
-  memcpy(eh->e_ident, "\x7f""ELF", 4);
-  eh->e_ident[4] = 2; // 64-bit
-  eh->e_ident[5] = 1; // little endian
-  eh->e_ident[6] = 1; // version
-  eh->e_type = 2;     // ET_EXEC
-  eh->e_machine = 62; // x86_64
-  eh->e_version = 1;
-  eh->e_entry = base + code_off + entry_off;
-  eh->e_phoff = sizeof(Ehdr64);
-  eh->e_ehsize = sizeof(Ehdr64);
-  eh->e_phentsize = sizeof(Phdr64);
-  eh->e_phnum = 1;
+  img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F';
+  img[4] = 2;   // 64-bit
+  img[5] = 1;   // little endian
+  img[6] = 1;   // version
+  put_u16_le(img + 16, 2);   // ET_EXEC
+  put_u16_le(img + 18, 62);  // x86_64
+  put_u32_le(img + 20, 1);
+  put_u64_le(img + 24, base + code_off + entry_off);
+  put_u64_le(img + 32, 64);  // e_phoff
+  put_u16_le(img + 52, 64);  // e_ehsize
+  put_u16_le(img + 54, 56);  // e_phentsize
+  put_u16_le(img + 56, 1);   // e_phnum
 
-  ph->p_type = 1;     // PT_LOAD
-  ph->p_flags = 7;    // PF_R | PF_W | PF_X
-  ph->p_offset = 0;
-  ph->p_vaddr = base;
-  ph->p_paddr = base;
-  ph->p_filesz = file_size;
-  ph->p_memsz = file_size;
-  ph->p_align = 0x1000;
+  // Program header starts at offset 64.
+  put_u32_le(img + 64 + 0, 1);                // PT_LOAD
+  put_u32_le(img + 64 + 4, 7);                // PF_R|PF_W|PF_X
+  put_u64_le(img + 64 + 8, 0);                // p_offset
+  put_u64_le(img + 64 + 16, base);            // p_vaddr
+  put_u64_le(img + 64 + 24, base);            // p_paddr
+  put_u64_le(img + 64 + 32, (uint64_t)file_size);
+  put_u64_le(img + 64 + 40, (uint64_t)file_size);
+  put_u64_le(img + 64 + 48, 0x1000);
 
-  memcpy(img + code_off, code->data, code->len);
+  {
+    size_t ci = 0;
+    while (ci < code->len) {
+      img[code_off + ci] = code->data[ci];
+      ci = ci + 1;
+    }
+  }
+  if (parse_verbose) eprintf("[v] elf: write copy code done\n", 0, 0, 0, 0);
 
   size_t off = 0;
   while (off < file_size) {
-    long n = write(1, img + off, file_size - off);
+    long n = write(out_fd, img + off, file_size - off);
     if (n <= 0) {
       free(img);
       return 1;
     }
     off += (size_t)n;
   }
+  if (parse_verbose) eprintf("[v] elf: write bytes done off=%d\n", (int)off, 0, 0, 0);
   free(img);
   return 0;
 }
 
-int compile_to_elf() {
-  char *source = read_stdin_source();
-  if (!source) {
-    eprintf("Error: cannot read stdin\n", 0, 0, 0, 0, 0, 0);
-    return 1;
-  }
+int compile_to_elf_source_fd(char *source, int out_fd) {
   reset_string_literals();
+  if (parse_verbose) eprintf("[v] elf: start compile_to_elf_source_fd\n", 0, 0, 0, 0);
 
   Node *funcs = parse_program_functions(source);
+  if (parse_verbose) eprintf("[v] elf: parse_program_functions done\n", 0, 0, 0, 0);
   int nfunc = 0;
   for (Node *f = funcs; f; f = f->next) {
     if (f->kind == ND_FUNC && f->name && f->body) nfunc++;
   }
+  if (parse_verbose) eprintf("[v] elf: nfunc=%d\n", nfunc, 0, 0, 0);
   if (nfunc == 0) {
     free(source);
     reset_string_literals();
-    eprintf("Error: no functions compiled from stdin\n", 0, 0, 0, 0, 0, 0);
+    eprintf("Error: no functions compiled from source\n", 0, 0, 0, 0);
     return 1;
   }
 
   ElfCtx c = {0};
-  c.funcs = calloc(nfunc, sizeof(FnLabel));
+  int break_labels_buf[128];
+  int continue_labels_buf[128];
+  StrLit str_lits_buf[8192];
+  c.code.data = NULL;
+  c.code.len = 0;
+  c.code.cap = 0;
+  c.label_pos = NULL;
+  c.label_set = NULL;
+  c.nlabels = 0;
+  c.caplabels = 0;
+  c.fixups = NULL;
+  c.nfixups = 0;
+  c.capfixups = 0;
+  c.funcs = NULL;
+  c.nfuncs = 0;
+  c.break_top = 0;
+  c.break_labels = break_labels_buf;
+  c.continue_top = 0;
+  c.continue_labels = continue_labels_buf;
+  c.ret_label = 0;
+  c.globals_label = 0;
+  c.str_lits = str_lits_buf;
+  c.n_str_lits = 0;
+  {
+    size_t funcs_bytes = (size_t)nfunc * 64;
+    c.funcs = (FnLabel *)malloc(funcs_bytes);
+    if (c.funcs) memset(c.funcs, 0, funcs_bytes);
+  }
+  if (parse_verbose) eprintf("[v] elf: calloc funcs ptr=%ld\n", (long)c.funcs, 0, 0, 0);
+  if (!c.funcs) {
+    eprintf("Error: out of memory allocating function labels\n", 0, 0, 0, 0);
+    free(source);
+    reset_string_literals();
+    return 1;
+  }
   c.nfuncs = nfunc;
+  if (parse_verbose) eprintf("[v] elf: before globals label\n", 0, 0, 0, 0);
   c.globals_label = ctx_new_label(&c);
+  if (parse_verbose) eprintf("[v] elf: globals label=%d\n", c.globals_label, 0, 0, 0);
 
   int idx = 0;
   for (Node *f = funcs; f; f = f->next) {
@@ -846,17 +909,19 @@ int compile_to_elf() {
       idx++;
     }
   }
+  if (parse_verbose) eprintf("[v] elf: collected funcs idx=%d\n", idx, 0, 0, 0);
 
   int main_lbl = find_func_label(&c, "main");
   if (main_lbl < 0) {
     free(c.funcs);
     free(source);
     reset_string_literals();
-    eprintf("Error: main() not compiled from stdin\n", 0, 0, 0, 0, 0, 0);
+    eprintf("Error: main() not compiled from source\n", 0, 0, 0, 0);
     return 1;
   }
 
   int start_lbl = ctx_new_label(&c);
+  if (parse_verbose) eprintf("[v] elf: labels start=%d main=%d\n", start_lbl, main_lbl, 0, 0);
   ctx_place_label(&c, start_lbl);
   bb_emit1(&c.code, 0x48); bb_emit1(&c.code, 0x8b); bb_emit1(&c.code, 0x3c); bb_emit1(&c.code, 0x24);          // mov rdi,[rsp]
   bb_emit1(&c.code, 0x48); bb_emit1(&c.code, 0x8d); bb_emit1(&c.code, 0x74); bb_emit1(&c.code, 0x24); bb_emit1(&c.code, 0x08); // lea rsi,[rsp+8]
@@ -865,24 +930,67 @@ int compile_to_elf() {
   bb_emit1(&c.code, 0xb8); bb_emit4(&c.code, 60);           // mov eax,60
   bb_emit1(&c.code, 0x0f); bb_emit1(&c.code, 0x05);         // syscall
 
-  for (int i = 0; i < c.nfuncs; i++) emit_function_elf(&c, &c.funcs[i]);
+  {
+    int i = 0;
+    while (i < c.nfuncs) {
+      emit_function_elf(&c, &c.funcs[i]);
+      i++;
+    }
+  }
+  if (parse_verbose) eprintf("[v] elf: emitted all functions\n", 0, 0, 0, 0);
   emit_string_literals(&c);
+  if (parse_verbose) eprintf("[v] elf: emitted string literals n=%d\n", c.n_str_lits, 0, 0, 0);
   ctx_place_label(&c, c.globals_label);
-  for (int i = 0; i < global_storage_size(); i++) bb_emit1(&c.code, 0);
+  {
+    int i = 0;
+    int gs = global_storage_size();
+    while (i < gs) {
+      bb_emit1(&c.code, 0);
+      i++;
+    }
+  }
 
   if (patch_fixups(&c) != 0) {
-    eprintf("Error: unresolved labels in codegen\n", 0, 0, 0, 0, 0, 0);
+    eprintf("Error: unresolved labels in codegen\n", 0, 0, 0, 0);
     free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(source);
     reset_string_literals();
     return 1;
   }
+  if (parse_verbose) eprintf("[v] elf: fixups patched n=%d\n", c.nfixups, 0, 0, 0);
 
-  int rc = write_elf_exec_stdout(&c.code, c.label_pos[start_lbl]);
-  free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(source);
+  int rc = write_elf_exec_fd(&c.code, c.label_pos[start_lbl], out_fd);
+  if (parse_verbose) eprintf("[v] elf: write_elf rc=%d code_len=%d\n", rc, c.code.len, 0, 0);
+  free(c.code.data);
+  free(c.label_pos);
+  free(c.label_set);
+  free(c.fixups);
+  free(c.funcs);
+  free(source);
   reset_string_literals();
   if (rc != 0) {
-    eprintf("Error: cannot write ELF to stdout\n", 0, 0, 0, 0, 0, 0);
+    eprintf("Error: cannot write ELF output\n", 0, 0, 0, 0);
     return 1;
   }
   return 0;
+}
+
+int compile_to_elf() {
+  char *source = read_stdin_source();
+  if (!source) {
+    eprintf("Error: cannot read stdin\n", 0, 0, 0, 0);
+    return 1;
+  }
+  return compile_to_elf_source_fd(source, 1);
+}
+
+int compile_to_elf_source_path(char *source, const char *out_path) {
+  int fd = open(out_path, O_WRONLY + O_CREAT + O_TRUNC, 493);
+  int rc;
+  if (fd < 0) {
+    eprintf("Error: cannot open output file: %s\n", (long)out_path, 0, 0, 0);
+    return 1;
+  }
+  rc = compile_to_elf_source_fd(source, fd);
+  close(fd);
+  return rc;
 }

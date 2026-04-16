@@ -23,14 +23,19 @@ void ast_emit_expr(Node *node) {
       else printf("  push.const %d\n", node->val);
       return;
     case ND_ID:
-      if (node->sym) printf("  load.local @%s ; off=%d\n", node->name ? node->name : "?", node->sym->offset);
+      if (node->sym && node->sym->is_array) printf("  addr.local @%s ; off=%d\n", node->name ? node->name : "?", node->sym->offset);
+      else if (node->sym) printf("  load.local @%s ; off=%d\n", node->name ? node->name : "?", node->sym->offset);
       else printf("  load.global @%s\n", node->name ? node->name : "?");
       return;
     case ND_ASSIGN:
       if (node->lhs && node->lhs->kind == ND_DEREF) {
+        int lsz = (node->lhs->ptr_level == 0) ? type_size_from_name(node->lhs->type_name) : 8;
         ast_emit_expr(node->lhs->lhs);
         ast_emit_expr(node->rhs);
-        printf("  store.indirect\n");
+        if (lsz == 1) printf("  store.indirect1\n");
+        else if (lsz == 2) printf("  store.indirect2\n");
+        else if (lsz == 4) printf("  store.indirect4\n");
+        else printf("  store.indirect8\n");
         return;
       }
       ast_emit_expr(node->rhs);
@@ -45,9 +50,15 @@ void ast_emit_expr(Node *node) {
       else printf("  push.const 0\n");
       return;
     case ND_DEREF:
+      {
+      int lsz = (node->ptr_level == 0) ? type_size_from_name(node->type_name) : 8;
       ast_emit_expr(node->lhs);
-      printf("  load.indirect\n");
+      if (lsz == 1) printf("  load.indirect1\n");
+      else if (lsz == 2) printf("  load.indirect2\n");
+      else if (lsz == 4) printf("  load.indirect4\n");
+      else printf("  load.indirect8\n");
       return;
+      }
     case ND_CALL: {
       int argc = 0;
       for (Node *a = node->args; a; a = a->next) {
@@ -69,6 +80,28 @@ void ast_emit_expr(Node *node) {
       ast_emit_expr(node->lhs);
       printf("  un.bnot\n");
       return;
+    case ND_PRE_INC:
+    case ND_PRE_DEC:
+    case ND_POST_INC:
+    case ND_POST_DEC: {
+      int is_inc = (node->kind == ND_PRE_INC || node->kind == ND_POST_INC);
+      int is_post = (node->kind == ND_POST_INC || node->kind == ND_POST_DEC);
+      if (node->lhs && node->lhs->kind == ND_ID && node->lhs->sym) {
+        ast_emit_expr(node->lhs);
+        printf("  push.const 1\n");
+        if (is_inc) printf("  bin.add\n");
+        else printf("  bin.sub\n");
+        if (node->lhs && node->lhs->sym) printf("  store.local @%s ; off=%d\n", node->lhs->name ? node->lhs->name : "?", node->lhs->sym->offset);
+        if (is_post) {
+          printf("  push.const 1\n");
+          if (is_inc) printf("  bin.sub\n");
+          else printf("  bin.add\n");
+        }
+      } else {
+        printf("  push.const 0\n");
+      }
+      return;
+    }
     case ND_COMMA:
       ast_emit_expr(node->lhs);
       printf("  drop\n");
@@ -105,6 +138,7 @@ void ast_emit_expr(Node *node) {
     case ND_AND: printf("  bin.land\n"); break;
     case ND_OR: printf("  bin.lor\n"); break;
     case ND_BITAND: printf("  bin.band\n"); break;
+    case ND_BITOR: printf("  bin.bor\n"); break;
     default: printf("  ; unsupported expr kind=%d\n", node->kind); break;
   }
 }
@@ -171,13 +205,38 @@ void ast_emit_stmt(Node *node) {
     }
     case ND_SWITCH: {
       int id = ast_label_id++;
-      ast_emit_expr(node->cond);
-      printf("  ; switch id=%d\n", id);
+      int idx = 0;
+      int has_default = 0;
+      int def_idx = -1;
       ast_break_labels[ast_break_top++] = id;
       for (Node *c = node->body; c; c = c->next) {
-        if (c->kind == ND_CASE) printf("  ; case %d\n", c->val);
-        else if (c->kind == ND_DEFAULT) printf("  ; default\n");
+        if (c->kind == ND_DEFAULT) { has_default = 1; def_idx = idx; }
+        idx++;
+      }
+      idx = 0;
+      for (Node *c = node->body; c; c = c->next) {
+        if (c->kind == ND_CASE) {
+          ast_emit_expr(node->cond);
+          printf("  push.const %d\n", c->val);
+          printf("  cmp.eq\n");
+          printf("  br.false .Lsw_next%d_%d\n", id, idx);
+          printf("  br .Lsw_case%d_%d\n", id, idx);
+          printf(".Lsw_next%d_%d:\n", id, idx);
+        } else if (c->kind == ND_DEFAULT) {
+          printf("  br .Lsw_case%d_%d\n", id, idx);
+        }
+        idx++;
+      }
+      if (!has_default) {
+        printf("  br .Lend%d\n", id);
+      } else {
+        printf("  br .Lsw_case%d_%d\n", id, def_idx);
+      }
+      idx = 0;
+      for (Node *c = node->body; c; c = c->next) {
+        printf(".Lsw_case%d_%d:\n", id, idx);
         ast_emit_stmt_list(c->body);
+        idx++;
       }
       printf(".Lend%d:\n", id);
       ast_break_top--;
@@ -201,13 +260,18 @@ void ast_emit_stmt(Node *node) {
   }
 }
 
+int emit_ast_from_source(char *source);
+
 int emit_ast_only() {
   char *source = read_stdin_source();
   if (!source) {
-    eprintf("Error: cannot read stdin\n", 0, 0, 0, 0, 0, 0);
+    eprintf("Error: cannot read stdin\n", 0, 0, 0, 0);
     return 1;
   }
+  return emit_ast_from_source(source);
+}
 
+int emit_ast_from_source(char *source) {
   Node *funcs = parse_program_functions(source);
   printf("; symbolic stack-machine IR\n");
   for (Node *f = funcs; f; f = f->next) {

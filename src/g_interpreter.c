@@ -6,30 +6,68 @@ typedef struct {
 long eval_expr(Node *node, long *vars);
 ExecResult exec_stmt(Node *node, long *vars);
 
+unsigned char *interp_mem = NULL;
+unsigned char *interp_base = NULL;
+int interp_mem_size = 0;
+
+static unsigned char *local_addr(Symbol *sym) {
+  int off = sym ? sym->offset : 8;
+  if (off < 0) off = 0;
+  if (off > interp_mem_size) off = interp_mem_size;
+  return interp_base - off;
+}
+
 long slot_get(Symbol *sym, long *vars) {
-  int idx = sym ? sym->offset / 8 : 1;
-  if (idx < 0) idx = 0;
-  if (idx > 255) idx = 255;
-  return vars[idx];
+  long v = 0;
+  unsigned char *p = local_addr(sym);
+  (void)vars;
+  memcpy(&v, p, sizeof(long));
+  return v;
 }
 
 void slot_set(Symbol *sym, long *vars, long v) {
-  int idx = sym ? sym->offset / 8 : 1;
-  if (idx < 0) idx = 0;
-  if (idx > 255) idx = 255;
-  vars[idx] = v;
+  unsigned char *p = local_addr(sym);
+  (void)vars;
+  memcpy(p, &v, sizeof(long));
 }
 
 long eval_expr(Node *node, long *vars) {
   if (!node) return 0;
   switch (node->kind) {
-    case ND_NUM: return node->val;
-    case ND_ID: return slot_get(node->sym, vars);
+    case ND_NUM:
+      if (node->ptr_level > 0 && node->name) return (long)node->name;
+      return node->val;
+    case ND_ID:
+      if (node->sym && node->sym->is_array) return (long)local_addr(node->sym);
+      return slot_get(node->sym, vars);
     case ND_NEG: return -eval_expr(node->lhs, vars);
     case ND_BNOT: return ~eval_expr(node->lhs, vars);
+    case ND_ADDR:
+      if (node->lhs && node->lhs->kind == ND_ID && node->lhs->sym) return (long)local_addr(node->lhs->sym);
+      if (node->lhs && node->lhs->kind == ND_DEREF) return eval_expr(node->lhs->lhs, vars);
+      return 0;
+    case ND_DEREF: {
+      long a = eval_expr(node->lhs, vars);
+      int lsz = (node->ptr_level == 0) ? type_size_from_name(node->type_name) : 8;
+      if (!a) return 0;
+      if (lsz == 1) return (long)(*(unsigned char *)(long)a);
+      if (lsz == 2) return (long)(*(unsigned short *)(long)a);
+      if (lsz == 4) return (long)(*(unsigned int *)(long)a);
+      return *(long *)(long)a;
+    }
     case ND_ASSIGN: {
       long v = eval_expr(node->rhs, vars);
       if (node->lhs && node->lhs->kind == ND_ID) slot_set(node->lhs->sym, vars, v);
+      else if (node->lhs && node->lhs->kind == ND_DEREF) {
+        long a = eval_expr(node->lhs->lhs, vars);
+        int lsz = (node->lhs->ptr_level == 0) ? type_size_from_name(node->lhs->type_name) : 8;
+        if (a) {
+          if (lsz == 1) *(unsigned char *)(long)a = (unsigned char)v;
+          else if (lsz == 2) *(unsigned short *)(long)a = (unsigned short)v;
+          else if (lsz == 4) *(unsigned int *)(long)a = (unsigned int)v;
+          else *(long *)(long)a = v;
+        }
+      }
       return v;
     }
     case ND_ADD: return eval_expr(node->lhs, vars) + eval_expr(node->rhs, vars);
@@ -49,6 +87,7 @@ long eval_expr(Node *node, long *vars) {
     case ND_AND: return eval_expr(node->lhs, vars) && eval_expr(node->rhs, vars);
     case ND_OR: return eval_expr(node->lhs, vars) || eval_expr(node->rhs, vars);
     case ND_BITAND: return eval_expr(node->lhs, vars) & eval_expr(node->rhs, vars);
+    case ND_BITOR: return eval_expr(node->lhs, vars) | eval_expr(node->rhs, vars);
     case ND_NOT: return !eval_expr(node->lhs, vars);
     case ND_TERNARY: return eval_expr(node->cond, vars) ? eval_expr(node->then, vars) : eval_expr(node->els, vars);
     case ND_PRE_INC:
@@ -162,6 +201,7 @@ ExecResult exec_stmt(Node *node, long *vars) {
 int run_source_as_program(char *source) {
   Node *funcs = parse_program_functions(source);
   Node *main_fn = NULL;
+  int max_off = 0;
   for (Node *f = funcs; f; f = f->next) {
     if (f->kind == ND_FUNC && f->name && !strcmp(f->name, "main")) {
       main_fn = f;
@@ -170,9 +210,40 @@ int run_source_as_program(char *source) {
   }
   if (!main_fn || !main_fn->body) return 1;
 
-  long vars[256];
-  memset(vars, 0, sizeof(vars));
+  {
+    Node *stack[4096];
+    int sp = 0;
+    stack[sp++] = main_fn->body;
+    while (sp > 0) {
+      Node *n = stack[--sp];
+      if (!n) continue;
+      if (n->sym && n->sym->offset > max_off) max_off = n->sym->offset;
+      if (n->lhs) stack[sp++] = n->lhs;
+      if (n->rhs) stack[sp++] = n->rhs;
+      if (n->cond) stack[sp++] = n->cond;
+      if (n->then) stack[sp++] = n->then;
+      if (n->els) stack[sp++] = n->els;
+      if (n->body) stack[sp++] = n->body;
+      if (n->init) stack[sp++] = n->init;
+      if (n->inc) stack[sp++] = n->inc;
+      if (n->next) stack[sp++] = n->next;
+      if (n->args) stack[sp++] = n->args;
+    }
+  }
+
+  interp_mem_size = ((max_off + 64 + 15) & ~15);
+  if (interp_mem_size < 256) interp_mem_size = 256;
+  interp_mem = calloc(1, interp_mem_size);
+  if (!interp_mem) return 1;
+  interp_base = interp_mem + interp_mem_size;
+
+  long vars[1];
+  vars[0] = 0;
   ExecResult r = exec_stmt(main_fn->body, vars);
+  free(interp_mem);
+  interp_mem = NULL;
+  interp_base = NULL;
+  interp_mem_size = 0;
   if (r.kind == 2) return (int)(r.val & 255);
   return 0;
 }

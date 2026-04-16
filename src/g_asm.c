@@ -9,8 +9,9 @@ void gen(Node *node) {
   if (!node) return;
   switch (node->kind) {
     case ND_NUM: printf("  push %d\n", node->val); return;
-    case ND_ID: 
-      if (node->sym) printf("  push [rbp-%d] # load %s\n", node->sym->offset, node->name);
+    case ND_ID:
+      if (node->sym && node->sym->is_array) printf("  lea rax, [rbp-%d] # array %s\n  push rax\n", node->sym->offset, node->name);
+      else if (node->sym) printf("  push [rbp-%d] # load %s\n", node->sym->offset, node->name);
       else printf("  push [rbp-8] # fallback load %s\n", node->name);
       return;
     case ND_ASSIGN:
@@ -209,6 +210,7 @@ void gen(Node *node) {
     case ND_AND: printf("  test rax, rax\n  setne al\n  test rdi, rdi\n  setne dl\n  and al, dl\n  movzx rax, al\n"); break;
     case ND_OR: printf("  or rax, rdi\n  setne al\n  movzx rax, al\n"); break;
     case ND_BITAND: printf("  and rax, rdi\n"); break;
+    case ND_BITOR: printf("  or rax, rdi\n"); break;
   }
   printf("  push rax\n");
 }
@@ -218,13 +220,22 @@ void emit_elf_header() {
   printf("# .byte 0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00...\n");
 }
 
+int emit_asm_from_source(char *source);
+
 int emit_asm_only() {
-  src = read_stdin_source();
-  if (!src) {
-    eprintf("Error: cannot read stdin\n", 0, 0, 0, 0, 0, 0);
+  char *source = read_stdin_source();
+  if (!source) {
+    eprintf("Error: cannot read stdin\n", 0, 0, 0, 0);
     return 1;
   }
-  src_base = src;
+  return emit_asm_from_source(source);
+}
+
+int emit_asm_from_source(char *source) {
+  src = source;
+  src_base = source;
+  src_ptr = 0;
+  macros = NULL;
 
   printf(".intel_syntax noprefix\n");
   emit_elf_header();

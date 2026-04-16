@@ -3,9 +3,6 @@
  * Implemented in plain C so the compiler can compile itself.
  */
 
-#ifndef MINIC_LIBC_INCLUDED
-#define MINIC_LIBC_INCLUDED
-
 typedef unsigned long size_t;
 typedef long ssize_t;
 typedef signed char int8_t;
@@ -28,16 +25,24 @@ typedef unsigned long uint64_t;
 #define MAP_ANONYMOUS 32
 #define AT_FDCWD -100
 #define O_RDONLY 0
+#define O_WRONLY 1
+#define O_CREAT 64
+#define O_TRUNC 512
 
-/* Syscall-backed functions (emitted as builtins by codegen). */
-ssize_t read(int fd, void *buf, size_t count);
-ssize_t write(int fd, const void *buf, size_t count);
-int openat(int dirfd, const char *pathname, int flags, int mode);
-int close(int fd);
-void *mmap(void *addr, size_t len, int prot, int flags, int fd, size_t off);
-int munmap(void *addr, size_t len);
-void exit(int code);
-int printf(const char *fmt, ...);
+/* External runtime/syscall dependencies. */
+extern ssize_t read(int fd, void *buf, size_t count);
+extern ssize_t write(int fd, const void *buf, size_t count);
+extern int openat(int dirfd, const char *pathname, int flags, int mode);
+extern int close(int fd);
+extern void *mmap(void *addr, size_t len, int prot, int flags, int fd, size_t off);
+extern int munmap(void *addr, size_t len);
+extern void exit(int code);
+extern int printf(const char *fmt, ...);
+
+int open(const char *pathname, int flags, int mode) {
+  return openat(AT_FDCWD, pathname, flags, mode);
+}
+
 void *malloc(size_t n);
 void free(void *ptr);
 void *calloc(size_t n, size_t sz);
@@ -162,7 +167,7 @@ static int write_i64_fd(int fd, long v) {
   return n;
 }
 
-static int vprint_fd(int fd, const char *fmt, long a1, long a2, long a3, long a4, long a5, long a6) {
+static int vprint_fd(int fd, const char *fmt, long a1, long a2, long a3, long a4) {
   int ai = 0;
   int out = 0;
 
@@ -198,8 +203,7 @@ static int vprint_fd(int fd, const char *fmt, long a1, long a2, long a3, long a4
     else if (ai == 1) arg = a2;
     else if (ai == 2) arg = a3;
     else if (ai == 3) arg = a4;
-    else if (ai == 4) arg = a5;
-    else if (ai == 5) arg = a6;
+    else if (ai == 3) arg = a4;
     ai++;
     if (spec == 's') {
       const char *s = (const char *)arg;
@@ -242,8 +246,8 @@ static int vprint_fd(int fd, const char *fmt, long a1, long a2, long a3, long a4
   return out;
 }
 
-int eprintf(const char *fmt, long a1, long a2, long a3, long a4, long a5, long a6) {
-  return vprint_fd(2, fmt, a1, a2, a3, a4, a5, a6);
+int eprintf(const char *fmt, long a1, long a2, long a3, long a4) {
+  return vprint_fd(2, fmt, a1, a2, a3, a4);
 }
 
 void *malloc(size_t n) {
@@ -259,10 +263,8 @@ void *malloc(size_t n) {
 }
 
 void free(void *ptr) {
-  size_t *base;
-  if (!ptr) return;
-  base = ((size_t *)ptr) - 1;
-  munmap((void *)base, base[0]);
+  (void)ptr;
+  /* Intentionally a no-op for self-host stability. */
 }
 
 void *calloc(size_t n, size_t sz) {
@@ -286,8 +288,6 @@ void *realloc(void *ptr, size_t n) {
   if (!np) return NULL;
   copy_n = old_n < n ? old_n : n;
   memcpy(np, ptr, copy_n);
-  free(ptr);
+  /* Keep old block alive (no-op free), return the new buffer. */
   return np;
 }
-
-#endif
