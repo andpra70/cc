@@ -4,6 +4,7 @@
  */
 
 #include "libc.c"
+#include "config.h"
 
 // --- Preprocessor ---
 typedef struct Macro {
@@ -13,7 +14,7 @@ typedef struct Macro {
 } Macro;
 
 Macro *macros = NULL;
-char *src_stack[64];
+char *src_stack[CC_CFG_PP_SRC_STACK_MAX];
 int src_ptr = 0;
 
 void add_macro(char *name, char *body) {
@@ -187,7 +188,7 @@ int lookup_named_constant(const char *name, int *out) {
 }
 
 void push_src_state(char *resume_src) {
-  if (src_ptr >= 64) {
+  if (src_ptr >= CC_CFG_PP_SRC_STACK_MAX) {
     eprintf("Error: preprocessor source stack overflow\n", 0, 0, 0, 0);
     exit(1);
   }
@@ -198,7 +199,7 @@ char *read_source_file_for_include(const char *path) {
   int fd = openat(AT_FDCWD, path, O_RDONLY, 0);
   char *fallback = NULL;
   char *fallback_src = NULL;
-  size_t cap = 4096;
+  size_t cap = CC_CFG_IO_BUFFER_INIT;
   size_t len = 0;
   char *buf;
   if (fd < 0) {
@@ -2037,7 +2038,7 @@ Node *function() {
 }
 
 char *read_stdin_source() {
-  size_t cap = 4096;
+  size_t cap = CC_CFG_IO_BUFFER_INIT;
   size_t len = 0;
   char *buf = malloc(cap + 1);
   if (!buf) return NULL;

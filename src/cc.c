@@ -1,3 +1,4 @@
+#include "config.h"
 #include "ast.c"
 #include "g_asm.c"
 #include "g_interpreter.c"
@@ -11,7 +12,7 @@
 
 char *read_file_source(const char *path) {
   int fd = open(path, O_RDONLY, 0);
-  size_t cap = 4096;
+  size_t cap = CC_CFG_IO_BUFFER_INIT;
   size_t len = 0;
   char *buf;
   if (fd < 0) return NULL;

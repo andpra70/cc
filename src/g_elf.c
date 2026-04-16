@@ -1,3 +1,5 @@
+#include "config.h"
+
 typedef struct {
   unsigned char *data;
   size_t len;
@@ -43,7 +45,7 @@ typedef struct {
 
 void bb_reserve(BinBuf *b, size_t add) {
   if (b->len + add <= b->cap) return;
-  size_t ncap = b->cap ? b->cap : 1024;
+  size_t ncap = b->cap ? b->cap : CC_CFG_ELF_CODE_INIT;
   while (ncap < b->len + add) ncap *= 2;
   b->data = realloc(b->data, ncap);
   b->cap = ncap;
@@ -67,7 +69,7 @@ void bb_patch4(BinBuf *b, size_t at, int32_t v) {
 
 void ctx_ensure_labels(ElfCtx *c, int need) {
   if (need <= c->caplabels) return;
-  int ncap = c->caplabels ? c->caplabels : 64;
+  int ncap = c->caplabels ? c->caplabels : CC_CFG_ELF_LABELS_INIT;
   while (ncap < need) ncap *= 2;
   c->label_pos = realloc(c->label_pos, sizeof(size_t) * ncap);
   c->label_set = realloc(c->label_set, sizeof(unsigned char) * ncap);
@@ -91,7 +93,7 @@ void ctx_place_label(ElfCtx *c, int label) {
 
 void ctx_add_fixup(ElfCtx *c, int label, size_t at) {
   if (c->nfixups == c->capfixups) {
-    int ncap = c->capfixups ? c->capfixups * 2 : 64;
+    int ncap = c->capfixups ? c->capfixups * 2 : CC_CFG_ELF_FIXUPS_INIT;
     c->fixups = realloc(c->fixups, sizeof(RelFix) * ncap);
     c->capfixups = ncap;
   }
@@ -141,8 +143,8 @@ int get_string_label(ElfCtx *c, const char *s) {
     if (!strcmp(c->str_lits[i].text, s)) return c->str_lits[i].label;
     i++;
   }
-  if (c->n_str_lits >= 8192) {
-    eprintf("Error: too many string literals\n", 0, 0, 0, 0);
+  if (c->n_str_lits >= CC_CFG_ELF_STR_LIT_MAX) {
+    eprintf("Error: too many string literals (max=%d)\n", CC_CFG_ELF_STR_LIT_MAX, 0, 0, 0);
     exit(1);
   }
   {
@@ -352,7 +354,7 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
       int argc = 0;
       Node *a = node->args;
       while (a) {
-        if (argc > 128) {
+        if (argc > CC_CFG_CALL_ARG_GUARD_MAX) {
           eprintf("Error: too many/cyclic args in call %s\n", (long)(node->name ? node->name : "(null)"), 0, 0, 0);
           exit(1);
         }
@@ -860,9 +862,9 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   }
 
   ElfCtx c = {0};
-  int break_labels_buf[128];
-  int continue_labels_buf[128];
-  StrLit str_lits_buf[8192];
+  int break_labels_buf[CC_CFG_ELF_LOOP_NEST_MAX];
+  int continue_labels_buf[CC_CFG_ELF_LOOP_NEST_MAX];
+  StrLit str_lits_buf[CC_CFG_ELF_STR_LIT_MAX];
   c.code.data = NULL;
   c.code.len = 0;
   c.code.cap = 0;
@@ -884,7 +886,7 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   c.str_lits = str_lits_buf;
   c.n_str_lits = 0;
   {
-    size_t funcs_bytes = (size_t)nfunc * 64;
+    size_t funcs_bytes = (size_t)nfunc * CC_CFG_ELF_FUNC_SLOT_BYTES;
     c.funcs = (FnLabel *)malloc(funcs_bytes);
     if (c.funcs) memset(c.funcs, 0, funcs_bytes);
   }
