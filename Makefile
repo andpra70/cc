@@ -20,6 +20,6 @@ test: clean all src/test.c
 
 self: clean all src/cc.c
 	./cc src/cc.c -o cc.elf
-	./cc.elf src/cc.c -v -o cc.elf2
-	./cc.elf2 src/test.c -v-o test.elf2
+	./cc.elf src/cc.c -o cc.elf2
+	./cc.elf2 src/test.c -o test.elf2
 	./test.elf2
