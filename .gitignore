@@ -1,0 +1,7 @@
+tmp/
+.codex
+.idea/
+.vscode/
+*.log
+*.tmp
+*.bak
