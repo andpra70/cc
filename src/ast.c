@@ -16,6 +16,53 @@ typedef struct Macro {
 Macro *macros = NULL;
 char *src_stack[CC_CFG_PP_SRC_STACK_MAX];
 int src_ptr = 0;
+int pp_if_parent_active[CC_CFG_PP_SRC_STACK_MAX];
+int pp_if_cond_true[CC_CFG_PP_SRC_STACK_MAX];
+int pp_if_else_seen[CC_CFG_PP_SRC_STACK_MAX];
+int pp_if_active[CC_CFG_PP_SRC_STACK_MAX];
+int pp_if_top = 0;
+
+int pp_is_active() {
+  if (pp_if_top <= 0) return 1;
+  return pp_if_active[pp_if_top - 1];
+}
+
+void pp_push_if(int cond_true) {
+  int parent_active;
+  if (pp_if_top >= CC_CFG_PP_SRC_STACK_MAX) {
+    eprintf("Error: preprocessor conditional stack overflow\n", 0, 0, 0, 0);
+    exit(1);
+  }
+  parent_active = pp_is_active();
+  pp_if_parent_active[pp_if_top] = parent_active;
+  pp_if_cond_true[pp_if_top] = cond_true ? 1 : 0;
+  pp_if_else_seen[pp_if_top] = 0;
+  pp_if_active[pp_if_top] = parent_active && cond_true;
+  pp_if_top++;
+}
+
+void pp_else() {
+  int i;
+  if (pp_if_top <= 0) {
+    eprintf("Error: #else without matching #ifdef\n", 0, 0, 0, 0);
+    exit(1);
+  }
+  i = pp_if_top - 1;
+  if (pp_if_else_seen[i]) {
+    eprintf("Error: duplicate #else in conditional block\n", 0, 0, 0, 0);
+    exit(1);
+  }
+  pp_if_else_seen[i] = 1;
+  pp_if_active[i] = pp_if_parent_active[i] && !pp_if_cond_true[i];
+}
+
+void pp_endif() {
+  if (pp_if_top <= 0) {
+    eprintf("Error: #endif without matching #ifdef\n", 0, 0, 0, 0);
+    exit(1);
+  }
+  pp_if_top--;
+}
 
 void add_macro(char *name, char *body) {
   Macro *m = malloc(sizeof(Macro));
@@ -303,44 +350,104 @@ char *read_source_file_for_include(const char *path, int include_dir_only) {
   return buf;
 }
 
-typedef struct GlobalInfoDef {
-  const char *name;
-  size_t offset;
-  const char *type_name;
-  int ptr_level;
-  int is_array;
-  size_t bytes;
-} GlobalInfoDef;
-
-#define GINFO(field, c_name, c_type, c_ptr_level, c_is_array) \
-  { c_name, offsetof(CompilerGlobalState, field), c_type, c_ptr_level, c_is_array, sizeof(((CompilerGlobalState *)0)->field) }
-
-static const GlobalInfoDef global_info_defs[] = {
-  GINFO(macros, "macros", "Macro", 1, 0),
-  GINFO(src_stack, "src_stack", "char", 2, 1),
-  GINFO(src_ptr, "src_ptr", "int", 0, 0),
-  GINFO(src, "src", "char", 1, 0),
-  GINFO(src_base, "src_base", "char", 1, 0),
-  GINFO(token, "token", "Token", 0, 0),
-  GINFO(parse_verbose, "parse_verbose", "int", 0, 0),
-  GINFO(locals, "locals", "Symbol", 1, 0),
-  GINFO(local_stack_size, "local_stack_size", "int", 0, 0),
-  GINFO(user_types, "user_types", "UserTypeDef", 1, 0),
-  GINFO(typedef_aliases, "typedef_aliases", "TypedefAlias", 1, 0),
-  GINFO(anon_type_counter, "anon_type_counter", "int", 0, 0)
-};
-
 int lookup_global_info(const char *name, int *offset, const char **type_name, int *ptr_level, int *is_array, int *bytes) {
-  size_t i;
+  CompilerGlobalState probe;
+  char *base = (char *)&probe;
   if (!name) return 0;
-  for (i = 0; i < sizeof(global_info_defs) / sizeof(global_info_defs[0]); i++) {
-    const GlobalInfoDef *g = &global_info_defs[i];
-    if (strcmp(g->name, name)) continue;
-    if (offset) *offset = (int)g->offset;
-    if (type_name) *type_name = g->type_name;
-    if (ptr_level) *ptr_level = g->ptr_level;
-    if (is_array) *is_array = g->is_array;
-    if (bytes) *bytes = (int)g->bytes;
+  if (!strcmp(name, "macros")) {
+    if (offset) *offset = (int)((char *)&probe.macros - base);
+    if (type_name) *type_name = "Macro";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.macros);
+    return 1;
+  }
+  if (!strcmp(name, "src_stack")) {
+    if (offset) *offset = (int)((char *)&probe.src_stack - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 2;
+    if (is_array) *is_array = 1;
+    if (bytes) *bytes = (int)sizeof(probe.src_stack);
+    return 1;
+  }
+  if (!strcmp(name, "src_ptr")) {
+    if (offset) *offset = (int)((char *)&probe.src_ptr - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.src_ptr);
+    return 1;
+  }
+  if (!strcmp(name, "src")) {
+    if (offset) *offset = (int)((char *)&probe.src - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.src);
+    return 1;
+  }
+  if (!strcmp(name, "src_base")) {
+    if (offset) *offset = (int)((char *)&probe.src_base - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.src_base);
+    return 1;
+  }
+  if (!strcmp(name, "token")) {
+    if (offset) *offset = (int)((char *)&probe.token - base);
+    if (type_name) *type_name = "Token";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.token);
+    return 1;
+  }
+  if (!strcmp(name, "parse_verbose")) {
+    if (offset) *offset = (int)((char *)&probe.parse_verbose - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.parse_verbose);
+    return 1;
+  }
+  if (!strcmp(name, "locals")) {
+    if (offset) *offset = (int)((char *)&probe.locals - base);
+    if (type_name) *type_name = "Symbol";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.locals);
+    return 1;
+  }
+  if (!strcmp(name, "local_stack_size")) {
+    if (offset) *offset = (int)((char *)&probe.local_stack_size - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.local_stack_size);
+    return 1;
+  }
+  if (!strcmp(name, "user_types")) {
+    if (offset) *offset = (int)((char *)&probe.user_types - base);
+    if (type_name) *type_name = "UserTypeDef";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.user_types);
+    return 1;
+  }
+  if (!strcmp(name, "typedef_aliases")) {
+    if (offset) *offset = (int)((char *)&probe.typedef_aliases - base);
+    if (type_name) *type_name = "TypedefAlias";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.typedef_aliases);
+    return 1;
+  }
+  if (!strcmp(name, "anon_type_counter")) {
+    if (offset) *offset = (int)((char *)&probe.anon_type_counter - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.anon_type_counter);
     return 1;
   }
   return 0;
@@ -374,12 +481,58 @@ void next() {
   }
 
   if (*src == '#') {
+    int cur_active;
     src++;
     while (*src == ' ' || *src == '\t') src++;
     char buf[32]; int i = 0;
     while (isalpha(*src) && i < 31) buf[i++] = *src++;
     buf[i] = 0;
+    cur_active = pp_is_active();
+    if (!strcmp(buf, "ifdef") || !strcmp(buf, "ifndef")) {
+      char *n_start;
+      int n_len;
+      char *name;
+      int cond = 0;
+      while (isspace(*src)) src++;
+      n_start = src;
+      while (isalnum(*src) || *src == '_') src++;
+      n_len = src - n_start;
+      name = malloc(n_len + 1);
+      if (!name) {
+        eprintf("Error: out of memory in #ifdef\n", 0, 0, 0, 0);
+        exit(1);
+      }
+      memcpy(name, n_start, n_len);
+      name[n_len] = 0;
+      if (find_macro(name)) cond = 1;
+      if (!strcmp(buf, "ifndef")) cond = !cond;
+      pp_push_if(cond);
+      while (*src && *src != '\n') src++;
+      if (*src == '\n') src++;
+      next();
+      return;
+    }
+    if (!strcmp(buf, "else")) {
+      pp_else();
+      while (*src && *src != '\n') src++;
+      if (*src == '\n') src++;
+      next();
+      return;
+    }
+    if (!strcmp(buf, "endif")) {
+      pp_endif();
+      while (*src && *src != '\n') src++;
+      if (*src == '\n') src++;
+      next();
+      return;
+    }
     if (!strcmp(buf, "define")) {
+      if (!cur_active) {
+        while (*src && *src != '\n') src++;
+        if (*src == '\n') src++;
+        next();
+        return;
+      }
       while (isspace(*src)) src++;
       char *n_start = src; while (isalnum(*src) || *src == '_') src++;
       int n_len = src - n_start; char *name = malloc(n_len + 1);
@@ -392,6 +545,12 @@ void next() {
       next(); return;
     }
     if (!strcmp(buf, "include")) {
+      if (!cur_active) {
+        while (*src && *src != '\n') src++;
+        if (*src == '\n') src++;
+        next();
+        return;
+      }
       char *path = NULL;
       char *inc = NULL;
       int include_dir_only = 0;
@@ -430,6 +589,13 @@ void next() {
       next();
       return;
     }
+    while (*src && *src != '\n') src++;
+    if (*src == '\n') src++;
+    next();
+    return;
+  }
+
+  if (!pp_is_active()) {
     while (*src && *src != '\n') src++;
     if (*src == '\n') src++;
     next();
@@ -667,20 +833,22 @@ typedef struct Node {
   Symbol *sym;
   char *type_name;
   int ptr_level;
+  int fixed_args;
+  int is_variadic;
 } Node;
 
 Node *new_node(NodeKind kind) {
-  long *raw = calloc(1, 120);
-  if (!raw) return NULL;
-  raw[0] = kind;
-  return (Node *)raw;
+  Node *n = calloc(1, sizeof(Node));
+  if (!n) return NULL;
+  n->kind = kind;
+  return n;
 }
 
 Node *clone_node_shallow(Node *src_node) {
   if (!src_node) return NULL;
-  Node *dst = calloc(1, 120);
+  Node *dst = calloc(1, sizeof(Node));
   if (!dst) return NULL;
-  memcpy(dst, src_node, 120);
+  memcpy(dst, src_node, sizeof(Node));
   return dst;
 }
 
@@ -1058,6 +1226,8 @@ int try_parse_typedef_or_record_decl() {
 
 int is_known_type_name(const char *s) {
   if (!s) return 0;
+  if (!strcmp(s, "va_list")) return 1;
+  if (!strcmp(s, "__builtin_va_list")) return 1;
   if (!strcmp(s, "double")) return 1;
   if (find_typedef_alias(s)) return 1;
   if (find_user_type(s)) return 1;
@@ -1074,6 +1244,8 @@ int type_size_from_name(const char *s) {
   if (!strcmp(s, "double")) return 8;
   if (!strcmp(s, "long")) return 8;
   if (!strcmp(s, "void")) return 8;
+  if (!strcmp(s, "va_list")) return 8;
+  if (!strcmp(s, "__builtin_va_list")) return 8;
   {
     const char *base = NULL;
     int ptr = 0;
@@ -1389,14 +1561,38 @@ Node *primary() {
     }
     next();
     if (token.type == '(') {
+      int is_va_arg_builtin = 0;
       next();
       node->kind = ND_CALL;
       node->type_name = (char *)"int";
       node->ptr_level = 0;
+      if (!strcmp(node->name, "va_arg") || !strcmp(node->name, "__builtin_va_arg")) is_va_arg_builtin = 1;
       Node head = {0}; Node *cur = &head;
-      while (token.type != ')') {
-        cur->next = assign(); cur = cur->next;
-        if (token.type == ',') next();
+      if (is_va_arg_builtin) {
+        if (token.type != ')') {
+          cur->next = assign();
+          cur = cur->next;
+        }
+        if (token.type == ',') {
+          int depth = 0;
+          next();
+          while (token.type != TK_EOF) {
+            if (token.type == '(') { depth++; next(); continue; }
+            if (token.type == ')') {
+              if (depth == 0) break;
+              depth--;
+              next();
+              continue;
+            }
+            if (depth == 0 && token.type == ',') break;
+            next();
+          }
+        }
+      } else {
+        while (token.type != ')') {
+          cur->next = assign(); cur = cur->next;
+          if (token.type == ',') next();
+        }
       }
       expect(')');
       node->args = head.next;
@@ -1968,10 +2164,13 @@ Node *function() {
   next();
   Node phead = {0};
   Node *pcur = &phead;
+  node->fixed_args = 0;
+  node->is_variadic = 0;
   while (token.type != TK_EOF && token.type != ')') {
     if (token.type == '.') {
       int dots = 0;
       while (token.type == '.' && dots < 3) { next(); dots++; } // varargs
+      if (dots == 3) node->is_variadic = 1;
       while (token.type != TK_EOF && token.type != ')') next();
       break;
     }
@@ -2019,6 +2218,7 @@ Node *function() {
       pn->ptr_level = pptr;
       pcur->next = pn;
       pcur = pn;
+      node->fixed_args++;
     }
     if (token.type == ',') next();
   }

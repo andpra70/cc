@@ -128,11 +128,39 @@ long eval_expr(Node *node, long *vars) {
       const char *abi;
       int argc = 0;
       Node *a = node->args;
+      direct = node->name ? node->name : "";
+      if (!strcmp(direct, "va_start") || !strcmp(direct, "__builtin_va_start")) {
+        if (node->args && node->args->kind == ND_ID && node->args->sym) slot_set(node->args->sym, vars, 0);
+        return 0;
+      }
+      if (!strcmp(direct, "va_arg") || !strcmp(direct, "__builtin_va_arg")) {
+        long p = 0;
+        if (node->args && node->args->kind == ND_ID && node->args->sym) p = slot_get(node->args->sym, vars);
+        else if (node->args) p = eval_expr(node->args, vars);
+        if (!p) return 0;
+        {
+          long v = *(long *)(long)p;
+          if (node->args && node->args->kind == ND_ID && node->args->sym) slot_set(node->args->sym, vars, p + (long)sizeof(long));
+          return v;
+        }
+      }
+      if (!strcmp(direct, "va_end") || !strcmp(direct, "__builtin_va_end")) {
+        if (node->args && node->args->kind == ND_ID && node->args->sym) slot_set(node->args->sym, vars, 0);
+        return 0;
+      }
+      if (!strcmp(direct, "va_copy") || !strcmp(direct, "__builtin_va_copy")) {
+        if (node->args && node->args->next && node->args->kind == ND_ID && node->args->sym) {
+          long srcv = 0;
+          if (node->args->next->kind == ND_ID && node->args->next->sym) srcv = slot_get(node->args->next->sym, vars);
+          else srcv = eval_expr(node->args->next, vars);
+          slot_set(node->args->sym, vars, srcv);
+        }
+        return 0;
+      }
       while (a && argc < 16) {
         call_args[argc++] = eval_expr(a, vars);
         a = a->next;
       }
-      direct = node->name ? node->name : "";
       abi = kernel_abi_symbol(direct);
       rv = kernel_abi_call(abi ? abi : direct, call_args, argc);
       if (rv == (long)KERNEL_ABI_UNKNOWN && abi && strcmp(abi, direct)) {

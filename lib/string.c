@@ -68,3 +68,45 @@ char *strrchr(const char *s, int c) {
   if (ch == 0) return (char *)s;
   return (char *)last;
 }
+
+char *strstr(const char *haystack, const char *needle) {
+  size_t i;
+  size_t j;
+  if (!*needle) return (char *)haystack;
+  for (i = 0; haystack[i]; i++) {
+    j = 0;
+    while (needle[j] && haystack[i + j] == needle[j]) j++;
+    if (!needle[j]) return (char *)(haystack + i);
+  }
+  return (char *)0;
+}
+
+static int is_delim_char(char ch, const char *delim) {
+  while (*delim) {
+    if (ch == *delim) return 1;
+    delim++;
+  }
+  return 0;
+}
+
+char *strtok_r(char *str, const char *delim, char **saveptr) {
+  char *tok;
+  if (!saveptr || !delim) return (char *)0;
+  if (!str) str = *saveptr;
+  if (!str) return (char *)0;
+
+  while (*str && is_delim_char(*str, delim)) str++;
+  if (!*str) {
+    *saveptr = str;
+    return (char *)0;
+  }
+
+  tok = str;
+  while (*str && !is_delim_char(*str, delim)) str++;
+  if (*str) {
+    *str = 0;
+    str++;
+  }
+  *saveptr = str;
+  return tok;
+}

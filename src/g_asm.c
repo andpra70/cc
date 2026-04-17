@@ -1,4 +1,6 @@
 // --- CodeGen ---
+#include <stdio.h>
+
 int label_id = 0;
 int break_labels[64];
 int break_top = 0;
@@ -190,9 +192,13 @@ void gen(Node *node) {
     case ND_CALL: {
       int i = 0;
       char *regs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+      const char *callee = kernel_abi_symbol(node->name ? node->name : "");
       for (Node *n = node->args; n; n = n->next) { gen(n); i++; }
-      for (int j = i - 1; j >= 0; j--) printf("  pop %s\n", regs[j]);
-      printf("  call %s\n  push rax\n", node->name); return;
+      for (int j = i - 1; j >= 0; j--) {
+        if (j < 6) printf("  pop %s\n", regs[j]);
+        else printf("  pop rax\n");
+      }
+      printf("  call %s\n  push rax\n", callee ? callee : (node->name ? node->name : "")); return;
     }
   }
   gen(node->lhs); gen(node->rhs); printf("  pop rdi\n  pop rax\n");

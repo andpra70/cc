@@ -1,23 +1,15 @@
-CC ?= cc
-CFLAGS ?= -O0 
-TCC ?= tcc
-TCCFLAGS ?= -O0
+CC ?= tcc
+CPPFLAGS ?= -Iinclude
+CFLAGS ?= -O0
 
 cc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_llvm.c src/minilib.c
-	$(CC) $(CFLAGS) src/cc.c -o cc
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/cc.c -o cc
 
 cpu: src/cpu.c src/minilib.c
-	$(CC) $(CFLAGS) src/cpu.c -o cpu -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) src/cpu.c -o cpu -lm
 
 all: cc cpu
 
-cc-tcc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_llvm.c src/minilib.c
-	$(TCC) $(TCCFLAGS) src/cc.c -o cc.tcc
-
-cpu-tcc: src/cpu.c src/minilib.c
-	$(TCC) $(TCCFLAGS) src/cpu.c -o cpu.tcc -lm
-
-all-tcc: cc-tcc cpu-tcc
 
 clean:
 	rm -f *.elf2 *.elf *.llvm cc cpu cc.tcc cpu.tcc compiler tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
@@ -33,3 +25,7 @@ self: clean all src/cc.c
 	./cc.elf src/cc.c -o cc.elf2
 	./cc.elf2 src/test.c -o test.elf2
 	./test.elf2
+
+elfs: test
+	readelf -d test.elf | grep NEEDED
+	nm -D test.elf 

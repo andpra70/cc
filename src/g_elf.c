@@ -43,6 +43,11 @@ typedef struct {
   int n_str_lits;
 } ElfCtx;
 
+static int elf_cur_fn_fixed_args = 0;
+static int elf_cur_fn_is_variadic = 0;
+static int elf_cur_fn_arg_home_base = 8;
+static const char *elf_cur_fn_name = 0;
+
 void bb_reserve(BinBuf *b, size_t add) {
   if (b->len + add <= b->cap) return;
   size_t ncap = b->cap ? b->cap : CC_CFG_ELF_CODE_INIT;
@@ -87,8 +92,14 @@ int ctx_new_label(ElfCtx *c) {
 }
 
 void ctx_place_label(ElfCtx *c, int label) {
-  c->label_set[label] = 1;
-  c->label_pos[label] = c->code.len;
+  unsigned char *ls;
+  size_t *lp;
+  if (!c) return;
+  ls = c->label_set;
+  lp = c->label_pos;
+  if (!ls || !lp) return;
+  ls[label] = 1;
+  lp[label] = c->code.len;
 }
 
 void ctx_add_fixup(ElfCtx *c, int label, size_t at) {
@@ -351,6 +362,93 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
       return;
       }
     case ND_CALL: {
+      const char *direct = node->name ? node->name : "";
+      if (!strcmp(direct, "va_start") || !strcmp(direct, "__builtin_va_start")) {
+        Node *ap_arg = node->args;
+        if (ap_arg && ap_arg->kind == ND_ID && ap_arg->sym) {
+          emit_lea_rax_local(c, ap_arg->sym->offset);
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc7); // mov rdi,rax
+        } else if (ap_arg) {
+          emit_expr_elf(c, ap_arg);
+          emit_pop_rdi(c);
+        } else {
+          bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xff); // xor edi,edi
+        }
+        if (elf_cur_fn_is_variadic) {
+          if (elf_cur_fn_fixed_args < 6) {
+            int off = elf_cur_fn_arg_home_base + elf_cur_fn_fixed_args * 8;
+            emit_lea_rax_local(c, off);
+          } else {
+            int disp = 16 + (elf_cur_fn_fixed_args - 6) * 8;
+            bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x8d); bb_emit1(&c->code, 0x85); bb_emit4(&c->code, disp); // lea rax,[rbp+disp]
+          }
+        } else {
+          bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); // xor eax,eax
+        }
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x07); // mov [rdi],rax
+        emit_push_imm32(c, 0);
+        return;
+      }
+      if (!strcmp(direct, "va_arg") || !strcmp(direct, "__builtin_va_arg")) {
+        Node *ap_arg = node->args;
+        if (ap_arg && ap_arg->kind == ND_ID && ap_arg->sym) {
+          emit_lea_rax_local(c, ap_arg->sym->offset);
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc7); // mov rdi,rax
+        } else if (ap_arg) {
+          emit_expr_elf(c, ap_arg);
+          emit_pop_rdi(c);
+        } else {
+          bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xff); // xor edi,edi
+        }
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x8b); bb_emit1(&c->code, 0x07); // mov rax,[rdi]
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc1); // mov rcx,rax
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, 0x08); // sub rax,8
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x07); // mov [rdi],rax
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x8b); bb_emit1(&c->code, 0x01); // mov rax,[rcx]
+        emit_push_rax(c);
+        return;
+      }
+      if (!strcmp(direct, "va_end") || !strcmp(direct, "__builtin_va_end")) {
+        Node *ap_arg = node->args;
+        if (ap_arg && ap_arg->kind == ND_ID && ap_arg->sym) {
+          emit_lea_rax_local(c, ap_arg->sym->offset);
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc7); // mov rdi,rax
+        } else if (ap_arg) {
+          emit_expr_elf(c, ap_arg);
+          emit_pop_rdi(c);
+        } else {
+          bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xff); // xor edi,edi
+        }
+        bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); // xor eax,eax
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x07); // mov [rdi],rax
+        emit_push_imm32(c, 0);
+        return;
+      }
+      if (!strcmp(direct, "va_copy") || !strcmp(direct, "__builtin_va_copy")) {
+        Node *dst_arg = node->args;
+        Node *src_arg = dst_arg ? dst_arg->next : NULL;
+        if (dst_arg && dst_arg->kind == ND_ID && dst_arg->sym) {
+          emit_lea_rax_local(c, dst_arg->sym->offset);
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc7); // mov rdi,rax
+        } else if (dst_arg) {
+          emit_expr_elf(c, dst_arg);
+          emit_pop_rdi(c);
+        } else {
+          bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xff); // xor edi,edi
+        }
+        if (src_arg && src_arg->kind == ND_ID && src_arg->sym) {
+          emit_mov_rax_local(c, src_arg->sym->offset);
+        } else if (src_arg) {
+          emit_expr_elf(c, src_arg);
+          emit_pop_rax(c);
+        } else {
+          bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); // xor eax,eax
+        }
+        bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x07); // mov [rdi],rax
+        emit_push_imm32(c, 0);
+        return;
+      }
+
       int argc = 0;
       Node *a = node->args;
       while (a) {
@@ -374,13 +472,32 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
         j--;
       }
       {
-        const char *direct = node->name ? node->name : "";
         const char *abi = kernel_abi_symbol(direct);
         int lbl = find_func_label(c, direct);
-        if (lbl < 0 && abi && strcmp(abi, direct)) lbl = find_func_label(c, abi);
+        int abi_call_lbl = find_func_label(c, "kernel_abi_call");
+        if (lbl < 0 && abi && strcmp(abi, direct)) {
+          /* Avoid mapping builtins back to the wrapper currently being emitted. */
+          if (!elf_cur_fn_name || strcmp(elf_cur_fn_name, abi)) lbl = find_func_label(c, abi);
+        }
         if (lbl >= 0) emit_call_label(c, lbl);
-        else if (emit_builtin_syscall_fallback(c, direct)) {}
-        else { bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); } // xor eax,eax
+        else if (abi_call_lbl >= 0 && (!elf_cur_fn_name || strcmp(elf_cur_fn_name, "kernel_abi_call"))) {
+          const char *dyn_name = (abi && *abi) ? abi : direct;
+          /* Build args[0..5] on stack then call kernel_abi_call(name, args, argc). */
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xec); bb_emit1(&c->code, 0x30); /* sub rsp,48 */
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x3c); bb_emit1(&c->code, 0x24);             /* mov [rsp],rdi */
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x74); bb_emit1(&c->code, 0x24); bb_emit1(&c->code, 0x08); /* mov [rsp+8],rsi */
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x54); bb_emit1(&c->code, 0x24); bb_emit1(&c->code, 0x10); /* mov [rsp+16],rdx */
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x24); bb_emit1(&c->code, 0x18); /* mov [rsp+24],rcx */
+          bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x44); bb_emit1(&c->code, 0x24); bb_emit1(&c->code, 0x20); /* mov [rsp+32],r8 */
+          bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x24); bb_emit1(&c->code, 0x28); /* mov [rsp+40],r9 */
+          emit_push_string_addr(c, dyn_name);
+          emit_pop_rdi(c);                                                                                                         /* rdi=name */
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x8d); bb_emit1(&c->code, 0x34); bb_emit1(&c->code, 0x24);               /* lea rsi,[rsp] */
+          bb_emit1(&c->code, 0xba); bb_emit4(&c->code, argc);                                                                      /* mov edx,argc */
+          emit_call_label(c, abi_call_lbl);
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc4); bb_emit1(&c->code, 0x30);               /* add rsp,48 */
+        } else if (emit_builtin_syscall_fallback(c, direct)) {}
+        else { bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); } /* xor eax,eax */
       }
       emit_push_rax(c);
       return;
@@ -704,19 +821,32 @@ int max_node_offset(Node *node) {
 }
 
 void emit_function_elf(ElfCtx *c, FnLabel *fn) {
+  elf_cur_fn_fixed_args = 0;
+  elf_cur_fn_is_variadic = 0;
+  elf_cur_fn_name = (fn && fn->name) ? fn->name : 0;
   ctx_place_label(c, fn->label);
   bb_emit1(&c->code, 0x55);                               // push rbp
   bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xe5); // mov rbp,rsp
 
   int frame = fn->fn ? fn->fn->val : 0;
-  if (frame <= 0) {
-    int pmax;
-    frame = max_node_offset(fn->fn->body);
-    pmax = max_node_offset(fn->fn->args);
-    if (pmax > frame) frame = pmax;
+  if (parse_verbose) eprintf("[v] elf: emit_function_elf frame0=%d\n", frame, 0, 0, 0);
+  if (frame < 0) frame = 0;
+  /*
+   * We always spill ABI argument registers to [rbp-8..rbp-48].
+   * Reserve a dedicated arg-home area beyond locals so we never overlap
+   * user local variables (e.g. va_list objects).
+   */
+  if (frame < 64) frame = 64;
+  {
+    int local_frame = frame;
+    frame = local_frame + 64;
+    frame = (frame + 15) & ~15;
+    elf_cur_fn_arg_home_base = local_frame + 8;
   }
-  if (frame < 16) frame = 16;
   frame = (frame + 15) & ~15;
+  if (parse_verbose) eprintf("[v] elf: fn=%s frame=%d fixed=%d var=%d\n",
+                              (long)(fn->name ? fn->name : "?"), frame,
+                              elf_cur_fn_fixed_args, elf_cur_fn_is_variadic);
   bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x81); bb_emit1(&c->code, 0xec); bb_emit4(&c->code, frame); // sub rsp, imm32
   /* Zero local frame so `{0}`-style local init works in the minimal frontend. */
   bb_emit1(&c->code, 0x57); // push rdi
@@ -727,6 +857,23 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
   bb_emit1(&c->code, 0xf3); bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0xab); // rep stosq
   bb_emit1(&c->code, 0x59); // pop rcx
   bb_emit1(&c->code, 0x5f); // pop rdi
+
+  /* Always spill ABI arg registers into canonical home slots.
+   * This keeps argc/argv-style accesses stable even when param metadata
+   * is partially missing in the minimal frontend.
+   */
+  bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xf8); // mov rax,rdi
+  emit_mov_local_rax(c, elf_cur_fn_arg_home_base + 0);
+  bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xf0); // mov rax,rsi
+  emit_mov_local_rax(c, elf_cur_fn_arg_home_base + 8);
+  bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xd0); // mov rax,rdx
+  emit_mov_local_rax(c, elf_cur_fn_arg_home_base + 16);
+  bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc8); // mov rax,rcx
+  emit_mov_local_rax(c, elf_cur_fn_arg_home_base + 24);
+  bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc0); // mov rax,r8
+  emit_mov_local_rax(c, elf_cur_fn_arg_home_base + 32);
+  bb_emit1(&c->code, 0x4c); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xc8); // mov rax,r9
+  emit_mov_local_rax(c, elf_cur_fn_arg_home_base + 40);
 
   int pi = 0;
   Node *p = fn->fn->args;
@@ -747,6 +894,10 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
   ctx_place_label(c, c->ret_label);
   bb_emit1(&c->code, 0xc9); // leave
   bb_emit1(&c->code, 0xc3); // ret
+  elf_cur_fn_fixed_args = 0;
+  elf_cur_fn_is_variadic = 0;
+  elf_cur_fn_arg_home_base = 8;
+  elf_cur_fn_name = 0;
 }
 
 int patch_fixups(ElfCtx *c) {
@@ -789,13 +940,83 @@ void put_u64_le(unsigned char *p, uint64_t v) {
   }
 }
 
-int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
+static size_t align_up_sz(size_t v, size_t a) {
+  if (a == 0) return v;
+  return (v + (a - 1)) & ~(a - 1);
+}
+
+int write_elf_exec_fd(BinBuf *code, size_t entry_off, size_t *label_pos, FnLabel *funcs, int nfuncs, int out_fd) {
   const uint64_t base = 0x400000;
   const size_t code_off = 0x1000;
-  size_t file_size = code_off + code->len;
+  size_t text_off = code_off;
+  size_t text_size = code->len;
+  size_t strtab_len = 1;
+  size_t shstrtab_len = 1 + 6 + 8 + 8 + 10; /* "", ".text", ".symtab", ".strtab", ".shstrtab" */
+  size_t sym_count = (size_t)(nfuncs + 2);   /* null + _start + funcs */
+  size_t symtab_size = sym_count * 24;
+  size_t symtab_off;
+  size_t strtab_off;
+  size_t shstrtab_off;
+  size_t shoff;
+  size_t file_size;
+  char *strtab;
+  char *shstrtab;
+  size_t *name_offs;
+  size_t si;
+  for (si = 0; si < (size_t)nfuncs; si++) {
+    const char *nm = funcs[si].name ? funcs[si].name : "";
+    strtab_len += strlen(nm) + 1;
+  }
+  strtab_len += 7; /* "_start" + NUL */
+
+  symtab_off = align_up_sz(text_off + text_size, 8);
+  strtab_off = symtab_off + symtab_size;
+  shstrtab_off = strtab_off + strtab_len;
+  shoff = align_up_sz(shstrtab_off + shstrtab_len, 8);
+  file_size = shoff + 5 * 64; /* null, .text, .symtab, .strtab, .shstrtab */
+
+  strtab = (char *)calloc(1, strtab_len);
+  shstrtab = (char *)calloc(1, shstrtab_len);
+  name_offs = (size_t *)calloc((size_t)nfuncs, sizeof(size_t));
+  if (!strtab || !shstrtab || !name_offs) {
+    if (strtab) free(strtab);
+    if (shstrtab) free(shstrtab);
+    if (name_offs) free(name_offs);
+    return 1;
+  }
+  {
+    size_t p = 1;
+    size_t q = 1;
+    size_t sh_text = 1;
+    size_t sh_symtab = sh_text + 6;
+    size_t sh_strtab = sh_symtab + 8;
+    size_t sh_shstrtab = sh_strtab + 8;
+    memcpy(strtab + p, "_start", 7);
+    p += 7;
+    for (si = 0; si < (size_t)nfuncs; si++) {
+      const char *nm = funcs[si].name ? funcs[si].name : "";
+      size_t n = strlen(nm) + 1;
+      name_offs[si] = p;
+      memcpy(strtab + p, nm, n);
+      p += n;
+    }
+
+    memcpy(shstrtab + q, ".text", 6); q += 6;
+    memcpy(shstrtab + q, ".symtab", 8); q += 8;
+    memcpy(shstrtab + q, ".strtab", 8); q += 8;
+    memcpy(shstrtab + q, ".shstrtab", 10);
+
+    (void)sh_shstrtab;
+  }
+
   if (parse_verbose) eprintf("[v] elf: write begin code_len=%d file_size=%d\n", (int)code->len, (int)file_size, 0, 0);
   unsigned char *img = calloc(1, file_size);
-  if (!img) return 1;
+  if (!img) {
+    free(strtab);
+    free(shstrtab);
+    free(name_offs);
+    return 1;
+  }
   if (parse_verbose) eprintf("[v] elf: write calloc ok ptr=%ld\n", (long)img, 0, 0, 0);
 
   img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F';
@@ -805,11 +1026,15 @@ int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
   put_u16_le(img + 16, 2);   // ET_EXEC
   put_u16_le(img + 18, 62);  // x86_64
   put_u32_le(img + 20, 1);
-  put_u64_le(img + 24, base + code_off + entry_off);
+  put_u64_le(img + 24, base + text_off + entry_off);
   put_u64_le(img + 32, 64);  // e_phoff
+  put_u64_le(img + 40, shoff); // e_shoff
   put_u16_le(img + 52, 64);  // e_ehsize
   put_u16_le(img + 54, 56);  // e_phentsize
   put_u16_le(img + 56, 1);   // e_phnum
+  put_u16_le(img + 58, 64);  // e_shentsize
+  put_u16_le(img + 60, 5);   // e_shnum
+  put_u16_le(img + 62, 4);   // e_shstrndx
 
   // Program header starts at offset 64.
   put_u32_le(img + 64 + 0, 1);                // PT_LOAD
@@ -821,12 +1046,103 @@ int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
   put_u64_le(img + 64 + 40, (uint64_t)file_size);
   put_u64_le(img + 64 + 48, 0x1000);
 
-  {
+  { /* .text */
     size_t ci = 0;
     while (ci < code->len) {
-      img[code_off + ci] = code->data[ci];
+      img[text_off + ci] = code->data[ci];
       ci = ci + 1;
     }
+  }
+
+  { /* .symtab */
+    size_t symi;
+    size_t o = symtab_off;
+    size_t start_name = 1;
+
+    /* [0] null symbol */
+    o += 24;
+
+    /* [1] _start */
+    put_u32_le(img + o + 0, (uint32_t)start_name);
+    img[o + 4] = 0x12; /* STB_GLOBAL | STT_FUNC */
+    img[o + 5] = 0;
+    put_u16_le(img + o + 6, 1); /* .text */
+    put_u64_le(img + o + 8, base + text_off + entry_off);
+    put_u64_le(img + o + 16, 0);
+    o += 24;
+
+    for (symi = 0; symi < (size_t)nfuncs; symi++) {
+      size_t lbl = (size_t)funcs[symi].label;
+      size_t voff = label_pos ? label_pos[lbl] : 0;
+      put_u32_le(img + o + 0, (uint32_t)name_offs[symi]);
+      img[o + 4] = 0x12; /* STB_GLOBAL | STT_FUNC */
+      img[o + 5] = 0;
+      put_u16_le(img + o + 6, 1); /* .text */
+      put_u64_le(img + o + 8, base + text_off + voff);
+      put_u64_le(img + o + 16, 0);
+      o += 24;
+    }
+  }
+
+  { /* .strtab + .shstrtab */
+    size_t i = 0;
+    while (i < strtab_len) { img[strtab_off + i] = (unsigned char)strtab[i]; i++; }
+    i = 0;
+    while (i < shstrtab_len) { img[shstrtab_off + i] = (unsigned char)shstrtab[i]; i++; }
+  }
+
+  { /* section headers */
+    size_t sh_text = 1;
+    size_t sh_symtab = sh_text + 6;
+    size_t sh_strtab = sh_symtab + 8;
+    size_t sh_shstrtab = sh_strtab + 8;
+    size_t sh = shoff + 64; /* section 1: .text */
+    put_u32_le(img + sh + 0, (uint32_t)sh_text);
+    put_u32_le(img + sh + 4, 1);    /* SHT_PROGBITS */
+    put_u64_le(img + sh + 8, 0x6);  /* SHF_ALLOC|SHF_EXECINSTR */
+    put_u64_le(img + sh + 16, base + text_off);
+    put_u64_le(img + sh + 24, text_off);
+    put_u64_le(img + sh + 32, text_size);
+    put_u32_le(img + sh + 40, 0);
+    put_u32_le(img + sh + 44, 0);
+    put_u64_le(img + sh + 48, 16);
+    put_u64_le(img + sh + 56, 0);
+
+    sh += 64; /* section 2: .symtab */
+    put_u32_le(img + sh + 0, (uint32_t)sh_symtab);
+    put_u32_le(img + sh + 4, 2);    /* SHT_SYMTAB */
+    put_u64_le(img + sh + 8, 0);
+    put_u64_le(img + sh + 16, 0);
+    put_u64_le(img + sh + 24, symtab_off);
+    put_u64_le(img + sh + 32, symtab_size);
+    put_u32_le(img + sh + 40, 3);   /* link -> .strtab */
+    put_u32_le(img + sh + 44, 1);   /* first global symbol index */
+    put_u64_le(img + sh + 48, 8);
+    put_u64_le(img + sh + 56, 24);  /* sizeof(Elf64_Sym) */
+
+    sh += 64; /* section 3: .strtab */
+    put_u32_le(img + sh + 0, (uint32_t)sh_strtab);
+    put_u32_le(img + sh + 4, 3);    /* SHT_STRTAB */
+    put_u64_le(img + sh + 8, 0);
+    put_u64_le(img + sh + 16, 0);
+    put_u64_le(img + sh + 24, strtab_off);
+    put_u64_le(img + sh + 32, strtab_len);
+    put_u32_le(img + sh + 40, 0);
+    put_u32_le(img + sh + 44, 0);
+    put_u64_le(img + sh + 48, 1);
+    put_u64_le(img + sh + 56, 0);
+
+    sh += 64; /* section 4: .shstrtab */
+    put_u32_le(img + sh + 0, (uint32_t)sh_shstrtab);
+    put_u32_le(img + sh + 4, 3);    /* SHT_STRTAB */
+    put_u64_le(img + sh + 8, 0);
+    put_u64_le(img + sh + 16, 0);
+    put_u64_le(img + sh + 24, shstrtab_off);
+    put_u64_le(img + sh + 32, shstrtab_len);
+    put_u32_le(img + sh + 40, 0);
+    put_u32_le(img + sh + 44, 0);
+    put_u64_le(img + sh + 48, 1);
+    put_u64_le(img + sh + 56, 0);
   }
   if (parse_verbose) eprintf("[v] elf: write copy code done\n", 0, 0, 0, 0);
 
@@ -835,12 +1151,18 @@ int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
     long n = write(out_fd, img + off, file_size - off);
     if (n <= 0) {
       free(img);
+      free(strtab);
+      free(shstrtab);
+      free(name_offs);
       return 1;
     }
     off += (size_t)n;
   }
   if (parse_verbose) eprintf("[v] elf: write bytes done off=%d\n", (int)off, 0, 0, 0);
   free(img);
+  free(strtab);
+  free(shstrtab);
+  free(name_offs);
   return 0;
 }
 
@@ -862,30 +1184,16 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
     return 1;
   }
 
-  ElfCtx c = {0};
+  ElfCtx c;
   int break_labels_buf[CC_CFG_ELF_LOOP_NEST_MAX];
   int continue_labels_buf[CC_CFG_ELF_LOOP_NEST_MAX];
   StrLit str_lits_buf[CC_CFG_ELF_STR_LIT_MAX];
-  c.code.data = NULL;
-  c.code.len = 0;
-  c.code.cap = 0;
-  c.label_pos = NULL;
-  c.label_set = NULL;
-  c.nlabels = 0;
-  c.caplabels = 0;
-  c.fixups = NULL;
-  c.nfixups = 0;
-  c.capfixups = 0;
-  c.funcs = NULL;
-  c.nfuncs = 0;
+  memset(&c, 0, sizeof(ElfCtx));
   c.break_top = 0;
   c.break_labels = break_labels_buf;
   c.continue_top = 0;
   c.continue_labels = continue_labels_buf;
-  c.ret_label = 0;
-  c.globals_label = 0;
   c.str_lits = str_lits_buf;
-  c.n_str_lits = 0;
   {
     size_t funcs_bytes = (size_t)nfunc * CC_CFG_ELF_FUNC_SLOT_BYTES;
     c.funcs = (FnLabel *)malloc(funcs_bytes);
@@ -962,7 +1270,7 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   }
   if (parse_verbose) eprintf("[v] elf: fixups patched n=%d\n", c.nfixups, 0, 0, 0);
 
-  int rc = write_elf_exec_fd(&c.code, c.label_pos[start_lbl], out_fd);
+  int rc = write_elf_exec_fd(&c.code, c.label_pos[start_lbl], c.label_pos, c.funcs, c.nfuncs, out_fd);
   if (parse_verbose) eprintf("[v] elf: write_elf rc=%d code_len=%d\n", rc, c.code.len, 0, 0);
   free(c.code.data);
   free(c.label_pos);

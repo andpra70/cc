@@ -166,7 +166,7 @@ Limiti intenzionali/noti (progetto minimale):
 - ABI/calling convention copre il caso principale usato dai test, non tutti i corner-case.
 - backend ELF orientato a Linux x86_64.
 - runtime/libc locale minimale (non equivalente a libc completa).
-- preprocessing ridotto (macro/include basilari, non pienamente compatibile con CPP standard).
+- preprocessing ridotto (macro/include basilari + `#ifdef/#else/#endif`, non pienamente compatibile con CPP standard).
 - error reporting essenziale.
 
 In generale va considerato un compilatore didattico/sperimentale, non un drop-in replacement di gcc/clang.

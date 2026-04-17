@@ -1,6 +1,7 @@
 /*
  * Symbolic stack-machine IR backend (LLVM-like textual shape).
  */
+#include <stdio.h>
 
 int ast_label_id = 0;
 int ast_break_labels[64];
@@ -10,6 +11,16 @@ int ast_continue_top = 0;
 
 void ast_emit_expr(Node *node);
 void ast_emit_stmt(Node *node);
+
+static const char *ir_name(Node *node) {
+  if (node && node->sym && node->sym->name) return node->sym->name;
+  if (node && node->name) return node->name;
+  return "?";
+}
+
+static void emit_local_op(const char *op, int off) {
+  printf("  %s @__off%d ; off=%d\n", op, off, off);
+}
 
 void ast_emit_expr(Node *node) {
   if (!node) {
@@ -23,9 +34,9 @@ void ast_emit_expr(Node *node) {
       else printf("  push.const %d\n", node->val);
       return;
     case ND_ID:
-      if (node->sym && node->sym->is_array) printf("  addr.local @%s ; off=%d\n", node->name ? node->name : "?", node->sym->offset);
-      else if (node->sym) printf("  load.local @%s ; off=%d\n", node->name ? node->name : "?", node->sym->offset);
-      else printf("  load.global @%s\n", node->name ? node->name : "?");
+      if (node->sym && node->sym->is_array) emit_local_op("addr.local", node->sym->offset);
+      else if (node->sym) emit_local_op("load.local", node->sym->offset);
+      else printf("  load.global @%s\n", ir_name(node));
       return;
     case ND_ASSIGN:
       if (node->lhs && node->lhs->kind == ND_DEREF) {
@@ -39,13 +50,13 @@ void ast_emit_expr(Node *node) {
         return;
       }
       ast_emit_expr(node->rhs);
-      if (node->lhs && node->lhs->sym) printf("  store.local @%s ; off=%d\n", node->lhs->name ? node->lhs->name : "?", node->lhs->sym->offset);
-      else if (node->lhs && node->lhs->name) printf("  store.global @%s\n", node->lhs->name);
+      if (node->lhs && node->lhs->sym) emit_local_op("store.local", node->lhs->sym->offset);
+      else if (node->lhs && node->lhs->name) printf("  store.global @%s\n", ir_name(node->lhs));
       else printf("  drop\n");
       return;
     case ND_ADDR:
-      if (node->lhs && node->lhs->sym) printf("  addr.local @%s ; off=%d\n", node->lhs->name ? node->lhs->name : "?", node->lhs->sym->offset);
-      else if (node->lhs && node->lhs->name) printf("  addr.global @%s\n", node->lhs->name);
+      if (node->lhs && node->lhs->sym) emit_local_op("addr.local", node->lhs->sym->offset);
+      else if (node->lhs && node->lhs->name) printf("  addr.global @%s\n", ir_name(node->lhs));
       else if (node->lhs && node->lhs->kind == ND_DEREF) ast_emit_expr(node->lhs->lhs);
       else printf("  push.const 0\n");
       return;
@@ -67,7 +78,7 @@ void ast_emit_expr(Node *node) {
         argc++;
       }
       callee = kernel_abi_symbol(node->name ? node->name : "?");
-      printf("  call @%s %d\n", (long)callee, argc);
+      printf("  call @%s %d\n", callee, argc);
       return;
     }
     case ND_NOT:
@@ -93,7 +104,7 @@ void ast_emit_expr(Node *node) {
         printf("  push.const 1\n");
         if (is_inc) printf("  bin.add\n");
         else printf("  bin.sub\n");
-        if (node->lhs && node->lhs->sym) printf("  store.local @%s ; off=%d\n", node->lhs->name ? node->lhs->name : "?", node->lhs->sym->offset);
+        if (node->lhs && node->lhs->sym) emit_local_op("store.local", node->lhs->sym->offset);
         if (is_post) {
           printf("  push.const 1\n");
           if (is_inc) printf("  bin.sub\n");
@@ -146,7 +157,10 @@ void ast_emit_expr(Node *node) {
 }
 
 void ast_emit_stmt_list(Node *node) {
-  for (Node *s = node; s; s = s->next) ast_emit_stmt(s);
+  for (Node *s = node; s; s = s->next) {
+    if (s->kind == ND_FUNC) break;
+    ast_emit_stmt(s);
+  }
 }
 
 void ast_emit_stmt(Node *node) {
@@ -158,7 +172,7 @@ void ast_emit_stmt(Node *node) {
     case ND_VAR:
       if (node->lhs) {
         ast_emit_expr(node->lhs);
-        if (node->sym) printf("  store.local @%s ; off=%d\n", node->name ? node->name : "?", node->sym->offset);
+        if (node->sym) emit_local_op("store.local", node->sym->offset);
       }
       return;
     case ND_IF: {

@@ -10,6 +10,6 @@
 #define O_TRUNC 512
 #define O_APPEND 1024
 
-int open(const char *pathname, int flags, mode_t mode);
+int open(const char *pathname, int flags, ...);
 
 #endif

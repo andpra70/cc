@@ -14,6 +14,7 @@ void exit(int code);
 
 #include "../lib/ctype.c"
 #include "../lib/string.c"
+#include "../lib/stdarg.c"
 #include "../lib/kernel_abi.c"
 #include "../lib/stdlib.c"
 #include "../lib/fcntl.c"

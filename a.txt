@@ -1,0 +1,39 @@
+
+#include <dlfcn.h> // Header necessario per le funzioni dl*
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h> // Header necessario per le funzioni dl*
+
+int main() {
+    void *handle;
+    double (*coseno)(double); // Puntatore a funzione
+    char *error;
+
+    // 1. Apriamo la libreria dinamica
+    handle = dlopen("libm.so.6", RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "%s\n", dlerror());
+        exit(EXIT_FAILURE);
+    }
+
+    // Pulizia di eventuali errori precedenti
+    dlerror();
+
+    // 2. Cerchiamo l'indirizzo della funzione "cos"
+    // dlsym restituisce un void*, quindi facciamo il cast al nostro puntatore
+    coseno = (double (*)(double)) dlsym(handle, "cos");
+
+    if ((error = dlerror()) != NULL)  {
+        fprintf(stderr, "%s\n", error);
+        exit(EXIT_FAILURE);
+    }
+
+    // 3. Usiamo la funzione caricata a runtime
+    printf("Il coseno di 2.0 è: %f\n", (*coseno)(2.0));
+
+    // 4. Chiudiamo il riferimento alla libreria
+    dlclose(handle);
+
+    return 0;
+}

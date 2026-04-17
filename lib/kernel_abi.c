@@ -4,6 +4,7 @@
  */
 
 #include "../include/kernel_abi.h"
+#include <dlfcn.h>
 
 extern ssize_t read(int fd, void *buf, size_t count);
 extern ssize_t write(int fd, const void *buf, size_t count);
@@ -24,6 +25,38 @@ extern char *strchr(const char *s, int c);
 extern char *strrchr(const char *s, int c);
 extern double strtod(const char *s, char **endptr);
 extern void exit(int code);
+extern void *dlopen(const char *filename, int flags);
+extern void *dlsym(void *handle, const char *symbol);
+extern int dlclose(void *handle);
+extern char *dlerror(void);
+
+static void *abi_dlopen_handle = 0;
+
+static long abi_call_ptr(void *fp, long *args, int argc) {
+  long (*f0)(void);
+  long (*f1)(long);
+  long (*f2)(long, long);
+  long (*f3)(long, long, long);
+  long (*f4)(long, long, long, long);
+  long (*f5)(long, long, long, long, long);
+  long (*f6)(long, long, long, long, long, long);
+  if (!fp) return (long)KERNEL_ABI_UNKNOWN;
+  if (argc <= 0) { f0 = fp; return f0(); }
+  if (argc == 1) { f1 = fp; return f1(args[0]); }
+  if (argc == 2) { f2 = fp; return f2(args[0], args[1]); }
+  if (argc == 3) { f3 = fp; return f3(args[0], args[1], args[2]); }
+  if (argc == 4) { f4 = fp; return f4(args[0], args[1], args[2], args[3]); }
+  if (argc == 5) { f5 = fp; return f5(args[0], args[1], args[2], args[3], args[4]); }
+  if (argc == 6) { f6 = fp; return f6(args[0], args[1], args[2], args[3], args[4], args[5]); }
+  return (long)KERNEL_ABI_UNKNOWN;
+}
+
+static void *abi_default_handle() {
+  if (abi_dlopen_handle) return abi_dlopen_handle;
+  abi_dlopen_handle = dlopen((const char *)0, RTLD_LAZY + RTLD_LOCAL);
+  if (!abi_dlopen_handle) abi_dlopen_handle = dlopen("libc.so.6", RTLD_LAZY + RTLD_LOCAL);
+  return abi_dlopen_handle;
+}
 
 static int abi_name_eq(const char *name, const char *base) {
   if (!name || !base) return 0;
@@ -35,6 +68,10 @@ static int abi_name_eq(const char *name, const char *base) {
   if (!strcmp(name, "__kernel_abi_mmap") && !strcmp(base, "mmap")) return 1;
   if (!strcmp(name, "__kernel_abi_munmap") && !strcmp(base, "munmap")) return 1;
   if (!strcmp(name, "__kernel_abi_exit") && !strcmp(base, "exit")) return 1;
+  if (!strcmp(name, "__kernel_abi_dlopen") && !strcmp(base, "dlopen")) return 1;
+  if (!strcmp(name, "__kernel_abi_dlsym") && !strcmp(base, "dlsym")) return 1;
+  if (!strcmp(name, "__kernel_abi_dlclose") && !strcmp(base, "dlclose")) return 1;
+  if (!strcmp(name, "__kernel_abi_dlerror") && !strcmp(base, "dlerror")) return 1;
   return 0;
 }
 
@@ -63,6 +100,10 @@ int kernel_abi_is_builtin(const char *name) {
   if (abi_name_eq(name, "printf")) return 1;
   if (abi_name_eq(name, "eprintf")) return 1;
   if (abi_name_eq(name, "exit")) return 1;
+  if (abi_name_eq(name, "dlopen")) return 1;
+  if (abi_name_eq(name, "dlsym")) return 1;
+  if (abi_name_eq(name, "dlclose")) return 1;
+  if (abi_name_eq(name, "dlerror")) return 1;
   return 0;
 }
 
@@ -75,6 +116,10 @@ const char *kernel_abi_symbol(const char *name) {
   if (abi_name_eq(name, "mmap")) return "__kernel_abi_mmap";
   if (abi_name_eq(name, "munmap")) return "__kernel_abi_munmap";
   if (abi_name_eq(name, "exit")) return "__kernel_abi_exit";
+  if (abi_name_eq(name, "dlopen")) return "__kernel_abi_dlopen";
+  if (abi_name_eq(name, "dlsym")) return "__kernel_abi_dlsym";
+  if (abi_name_eq(name, "dlclose")) return "__kernel_abi_dlclose";
+  if (abi_name_eq(name, "dlerror")) return "__kernel_abi_dlerror";
   return name;
 }
 
@@ -135,8 +180,27 @@ long kernel_abi_call(const char *name, long *args, int argc) {
     return (long)KERNEL_ABI_UNKNOWN;
 #endif
   }
+  if (abi_name_eq(name, "dlopen") && argc >= 1) {
+    int flags = (argc >= 2) ? (int)args[1] : (RTLD_LAZY + RTLD_LOCAL);
+    return (long)dlopen((const char *)args[0], flags);
+  }
+  if (abi_name_eq(name, "dlsym") && argc >= 2) {
+    return (long)dlsym((void *)args[0], (const char *)args[1]);
+  }
+  if (abi_name_eq(name, "dlclose") && argc >= 1) {
+    return (long)dlclose((void *)args[0]);
+  }
+  if (abi_name_eq(name, "dlerror")) {
+    return (long)dlerror();
+  }
   if (abi_name_eq(name, "exit") && argc >= 1) {
     exit((int)args[0]);
+  }
+  {
+    void *h = abi_default_handle();
+    void *fp = 0;
+    if (h && name) fp = dlsym(h, name);
+    if (fp) return abi_call_ptr(fp, args, argc);
   }
   return (long)KERNEL_ABI_UNKNOWN;
 }
@@ -167,4 +231,20 @@ int __kernel_abi_munmap(void *addr, size_t len) {
 
 void __kernel_abi_exit(int code) {
   exit(code);
+}
+
+void *__kernel_abi_dlopen(const char *filename, int flags) {
+  return dlopen(filename, flags);
+}
+
+void *__kernel_abi_dlsym(void *handle, const char *symbol) {
+  return dlsym(handle, symbol);
+}
+
+int __kernel_abi_dlclose(void *handle) {
+  return dlclose(handle);
+}
+
+char *__kernel_abi_dlerror(void) {
+  return dlerror();
 }

@@ -191,8 +191,13 @@ int compiler_entry(int argc, char **argv, int argi) {
     return 1;
   }
   parse_verbose = verbose;
-  if (verbose) eprintf("[v] mode=%d input=%s out_file=%s out_dir=%s\n", mode, (long)input_path,
-                       (long)(output_file ? output_file : "(auto)"), (long)(output_dir ? output_dir : "(cwd)"));
+  if (verbose) {
+    char *vf = "(auto)";
+    char *vd = "(cwd)";
+    if (output_file) vf = output_file;
+    if (output_dir) vd = output_dir;
+    eprintf("[v] mode=%d input=%s out_file=%s out_dir=%s\n", mode, (long)input_path, (long)vf, (long)vd);
+  }
 
   source = read_file_source(input_path);
   if (verbose) eprintf("[v] read_file_source done ptr=%ld\n", (long)source, 0, 0, 0);
