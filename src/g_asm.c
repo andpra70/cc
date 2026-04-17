@@ -200,7 +200,8 @@ void gen(Node *node) {
       }
       if (callee) printf("  call %s\n  push rax\n", callee);
       else {
-        gen(node->lhs);
+        if (node->lhs && node->lhs->kind == ND_DEREF && node->lhs->lhs && node->lhs->lhs->ptr_level > 0) gen(node->lhs->lhs);
+        else gen(node->lhs);
         printf("  pop rax\n  call rax\n  push rax\n");
       }
       return;

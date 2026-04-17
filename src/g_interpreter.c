@@ -162,7 +162,11 @@ long eval_expr(Node *node, long *vars) {
         a = a->next;
       }
       if (!direct) {
-        long fp = eval_expr(node->lhs, vars);
+        long fp;
+        if (node->lhs && node->lhs->kind == ND_DEREF && node->lhs->lhs && node->lhs->lhs->ptr_level > 0)
+          fp = eval_expr(node->lhs->lhs, vars);
+        else
+          fp = eval_expr(node->lhs, vars);
         rv = kernel_abi_call_ptr(fp, call_args, argc);
       } else {
         abi = kernel_abi_symbol(direct);

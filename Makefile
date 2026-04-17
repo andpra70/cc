@@ -14,11 +14,13 @@ all: cc cpu
 clean:
 	rm -f *.elf2 *.elf *.llvm cc cpu cc.tcc cpu.tcc compiler tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
 
-test: clean all src/test.c
+test: clean all src/test.c src/dyn.c
 	./cc src/test.c -v -a -o test.llvm
 	./cpu test.llvm
 	./cc src/test.c -o test.elf
 	./test.elf
+	./cc src/dyn.c -o dyn.elf
+	./dyn.elf
 
 self: clean all src/cc.c
 	./cc src/cc.c -o cc.elf

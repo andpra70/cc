@@ -476,7 +476,10 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
         j--;
       }
       if (!direct) {
-        emit_expr_elf(c, node->lhs);
+        if (node->lhs && node->lhs->kind == ND_DEREF && node->lhs->lhs && node->lhs->lhs->ptr_level > 0)
+          emit_expr_elf(c, node->lhs->lhs);
+        else
+          emit_expr_elf(c, node->lhs);
         emit_pop_rax(c);
         bb_emit1(&c->code, 0xff); bb_emit1(&c->code, 0xd0); /* call rax */
       } else {

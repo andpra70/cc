@@ -1877,10 +1877,43 @@ Node *unary() {
     Token saved_tok = token;
     Node *casted = NULL;
     next();
-    if (try_parse_cast_type() && token.type == ')') {
+    {
+      char *cast_base = (char *)"int";
+      int cast_ptr = 0;
+      int ok = 0;
+      if (parse_type_base_for_decl(&cast_base)) {
+        while (token.type == '*') { cast_ptr++; next(); }
+        if (token.type == '(') {
+          char *decl_src = src;
+          Token decl_tok = token;
+          int fptr_ok = 0;
+          next();
+          if (token.type == '*') {
+            fptr_ok = 1;
+            while (token.type == '*') { cast_ptr++; next(); }
+            if (token.type == TK_ID) next();
+            if (token.type == ')') {
+              next();
+              if (token.type == '(' && skip_paren_group_tokens()) fptr_ok = 1;
+              else fptr_ok = 0;
+            } else fptr_ok = 0;
+          }
+          if (!fptr_ok) {
+            src = decl_src;
+            token = decl_tok;
+          }
+        }
+        if (token.type == ')') ok = 1;
+      }
+      if (ok) {
       next();
       casted = unary();
+      if (casted) {
+        casted->type_name = cast_base;
+        casted->ptr_level = cast_ptr;
+      }
       return casted;
+      }
     }
     src = saved_src;
     token = saved_tok;

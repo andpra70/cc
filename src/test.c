@@ -11,6 +11,11 @@ typedef union Num {
 } Num;
 
 extern long write(int fd, const void *buf, size_t count);
+extern void *dlopen(const char *filename, int flags);
+extern void *dlsym(void *handle, const char *symbol);
+extern int dlclose(void *handle);
+
+#define RTLD_LAZY 1
 
 void out_ch(char c) {
   write(1, &c, 1);
@@ -168,6 +173,28 @@ int test_bitor() {
   return (a | b) == 15;
 }
 
+int test_casts() {
+  int *p;
+  long v;
+  int (*fp)(int);
+  p = (int *)0;
+  v = (long)p;
+  p = (int *)v;
+  fp = (int (*)(int))0;
+  return p == 0 && v == 0 && fp == 0;
+}
+
+int test_dyn() {
+  void *h;
+  long (*pwrite)(int, void *, size_t);
+  h = dlopen((char *)0, RTLD_LAZY);
+  if (!h) return 1;
+  pwrite = (long (*)(int, void *, size_t))dlsym(h, "write");
+  if (!pwrite) { dlclose(h); return 1; }
+  dlclose(h);
+  return 1;
+}
+
 int main() {
   int fails = 0;
   int ok;
@@ -190,6 +217,8 @@ int main() {
   ok = test_ternary(); report("ternary", ok); if (!ok) fails = fails + 1;
   ok = test_bitand(); report("bitand", ok); if (!ok) fails = fails + 1;
   ok = test_bitor(); report("bitor", ok); if (!ok) fails = fails + 1;
+  ok = test_casts(); report("casts", ok); if (!ok) fails = fails + 1;
+  ok = test_dyn(); report("dyn", ok); if (!ok) fails = fails + 1;
 
   out_str("total_fail:");
   tens = fails / 10;

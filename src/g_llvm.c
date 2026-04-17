@@ -80,7 +80,8 @@ void ast_emit_expr(Node *node) {
       if (node->name && *node->name) callee = kernel_abi_symbol(node->name);
       if (callee) printf("  call @%s %d\n", callee, argc);
       else {
-        ast_emit_expr(node->lhs);
+        if (node->lhs && node->lhs->kind == ND_DEREF && node->lhs->lhs && node->lhs->lhs->ptr_level > 0) ast_emit_expr(node->lhs->lhs);
+        else ast_emit_expr(node->lhs);
         printf("  call.indirect %d\n", argc);
       }
       return;
