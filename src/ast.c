@@ -42,10 +42,34 @@ typedef struct {
   char *name;
 } Token;
 
+typedef struct Symbol Symbol;
+typedef struct UserTypeDef UserTypeDef;
+typedef struct TypedefAlias TypedefAlias;
+
+typedef struct CompilerGlobalState {
+  Macro *macros;
+  char *src_stack[CC_CFG_PP_SRC_STACK_MAX];
+  int src_ptr;
+  char *src;
+  char *src_base;
+  Token token;
+  int parse_verbose;
+  Symbol *locals;
+  int local_stack_size;
+  UserTypeDef *user_types;
+  TypedefAlias *typedef_aliases;
+  int anon_type_counter;
+} CompilerGlobalState;
+
 char *src;
 char *src_base;
 Token token;
 int parse_verbose = 0;
+Symbol *locals = NULL;
+int local_stack_size = 0;
+UserTypeDef *user_types = NULL;
+TypedefAlias *typedef_aliases = NULL;
+int anon_type_counter = 0;
 
 char *tok_name(int t) {
   switch (t) {
@@ -280,72 +304,50 @@ char *read_source_file_for_include(const char *path, int include_dir_only) {
 }
 
 typedef struct GlobalInfoDef {
-  char *name;
-  int offset;
-  char *type_name;
+  const char *name;
+  size_t offset;
+  const char *type_name;
   int ptr_level;
   int is_array;
-  int bytes;
-  struct GlobalInfoDef *next;
+  size_t bytes;
 } GlobalInfoDef;
 
-GlobalInfoDef *global_info_defs = NULL;
-int global_info_initialized = 0;
+#define GINFO(field, c_name, c_type, c_ptr_level, c_is_array) \
+  { c_name, offsetof(CompilerGlobalState, field), c_type, c_ptr_level, c_is_array, sizeof(((CompilerGlobalState *)0)->field) }
 
-void register_global_info(char *name, int offset, char *type_name, int ptr_level, int is_array, int bytes) {
-  GlobalInfoDef *g = calloc(1, sizeof(GlobalInfoDef));
-  g->name = name;
-  g->offset = offset;
-  g->type_name = type_name;
-  g->ptr_level = ptr_level;
-  g->is_array = is_array;
-  g->bytes = bytes;
-  g->next = global_info_defs;
-  global_info_defs = g;
-}
-
-void ensure_global_info_registry() {
-  if (global_info_initialized) return;
-  global_info_initialized = 1;
-  register_global_info((char *)"macros", 0, (char *)"Macro", 1, 0, 8);
-  register_global_info((char *)"src_stack", 32, (char *)"char", 2, 1, 512);
-  register_global_info((char *)"src_ptr", 544, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"src", 552, (char *)"char", 1, 0, 8);
-  register_global_info((char *)"src_base", 560, (char *)"char", 1, 0, 8);
-  register_global_info((char *)"token", 576, (char *)"Token", 0, 0, 24);
-  register_global_info((char *)"parse_verbose", 600, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"global_info_defs", 608, (char *)"GlobalInfoDef", 1, 0, 8);
-  register_global_info((char *)"global_info_initialized", 616, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"locals", 624, (char *)"Symbol", 1, 0, 8);
-  register_global_info((char *)"local_stack_size", 632, (char *)"int", 0, 0, 8);
-  register_global_info((char *)"user_types", 640, (char *)"UserTypeDef", 1, 0, 8);
-  register_global_info((char *)"typedef_aliases", 648, (char *)"TypedefAlias", 1, 0, 8);
-  register_global_info((char *)"anon_type_counter", 656, (char *)"int", 0, 0, 8);
-}
+static const GlobalInfoDef global_info_defs[] = {
+  GINFO(macros, "macros", "Macro", 1, 0),
+  GINFO(src_stack, "src_stack", "char", 2, 1),
+  GINFO(src_ptr, "src_ptr", "int", 0, 0),
+  GINFO(src, "src", "char", 1, 0),
+  GINFO(src_base, "src_base", "char", 1, 0),
+  GINFO(token, "token", "Token", 0, 0),
+  GINFO(parse_verbose, "parse_verbose", "int", 0, 0),
+  GINFO(locals, "locals", "Symbol", 1, 0),
+  GINFO(local_stack_size, "local_stack_size", "int", 0, 0),
+  GINFO(user_types, "user_types", "UserTypeDef", 1, 0),
+  GINFO(typedef_aliases, "typedef_aliases", "TypedefAlias", 1, 0),
+  GINFO(anon_type_counter, "anon_type_counter", "int", 0, 0)
+};
 
 int lookup_global_info(const char *name, int *offset, const char **type_name, int *ptr_level, int *is_array, int *bytes) {
+  size_t i;
   if (!name) return 0;
-  ensure_global_info_registry();
-  for (GlobalInfoDef *g = global_info_defs; g; g = g->next) {
+  for (i = 0; i < sizeof(global_info_defs) / sizeof(global_info_defs[0]); i++) {
+    const GlobalInfoDef *g = &global_info_defs[i];
     if (strcmp(g->name, name)) continue;
-    if (offset) *offset = g->offset;
+    if (offset) *offset = (int)g->offset;
     if (type_name) *type_name = g->type_name;
     if (ptr_level) *ptr_level = g->ptr_level;
     if (is_array) *is_array = g->is_array;
-    if (bytes) *bytes = g->bytes;
+    if (bytes) *bytes = (int)g->bytes;
     return 1;
   }
   return 0;
 }
 
 int global_storage_size() {
-  int max_end = 0;
-  ensure_global_info_registry();
-  for (GlobalInfoDef *g = global_info_defs; g; g = g->next) {
-    int end = g->offset + g->bytes;
-    if (end > max_end) max_end = end;
-  }
-  return max_end;
+  return (int)sizeof(CompilerGlobalState);
 }
 
 void next() {
@@ -601,9 +603,6 @@ typedef struct Symbol {
   struct Symbol *next;
 } Symbol;
 
-Symbol *locals = NULL;
-int local_stack_size = 0;
-
 Symbol *find_local(char *name) {
   for (Symbol *s = locals; s; s = s->next) if (!strcmp(s->name, name)) return s;
   return NULL;
@@ -730,10 +729,6 @@ typedef struct TypedefAlias {
   int ptr_level;
   struct TypedefAlias *next;
 } TypedefAlias;
-
-UserTypeDef *user_types = NULL;
-TypedefAlias *typedef_aliases = NULL;
-int anon_type_counter = 0;
 
 char *dup_cstr(const char *s) {
   size_t n;

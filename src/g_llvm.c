@@ -61,11 +61,13 @@ void ast_emit_expr(Node *node) {
       }
     case ND_CALL: {
       int argc = 0;
+      const char *callee;
       for (Node *a = node->args; a; a = a->next) {
         ast_emit_expr(a);
         argc++;
       }
-      printf("  call @%s %d\n", node->name ? node->name : "?", argc);
+      callee = kernel_abi_symbol(node->name ? node->name : "?");
+      printf("  call @%s %d\n", (long)callee, argc);
       return;
     }
     case ND_NOT:

@@ -3,7 +3,7 @@
 #include "g_asm.c"
 #include "g_interpreter.c"
 #include "g_elf.c"
-#include "g_ast.c"
+#include "g_llvm.c"
 
 #define MODE_ELF 0
 #define MODE_ASM 1

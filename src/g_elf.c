@@ -231,7 +231,7 @@ int find_func_label(ElfCtx *c, const char *name) {
   return -1;
 }
 
-int emit_builtin_syscall_call(ElfCtx *c, const char *name) {
+int emit_builtin_syscall_fallback(ElfCtx *c, const char *name) {
   int sysno = -1;
   int needs_r10 = 0;
   if (!strcmp(name, "read")) sysno = 0;
@@ -373,12 +373,13 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
         else bb_emit1(&c->code, 0x58);                 // pop rax discard
         j--;
       }
-      if (emit_builtin_syscall_call(c, node->name)) {
-        emit_push_rax(c);
-        return;
-      } else {
-        int lbl = find_func_label(c, node->name);
+      {
+        const char *direct = node->name ? node->name : "";
+        const char *abi = kernel_abi_symbol(direct);
+        int lbl = find_func_label(c, direct);
+        if (lbl < 0 && abi && strcmp(abi, direct)) lbl = find_func_label(c, abi);
         if (lbl >= 0) emit_call_label(c, lbl);
+        else if (emit_builtin_syscall_fallback(c, direct)) {}
         else { bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); } // xor eax,eax
       }
       emit_push_rax(c);
@@ -945,6 +946,7 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   ctx_place_label(&c, c.globals_label);
   {
     int i = 0;
+    /* ast.c computes this from CompilerGlobalState via sizeof/offsetof. */
     int gs = global_storage_size();
     while (i < gs) {
       bb_emit1(&c.code, 0);

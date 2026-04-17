@@ -14,7 +14,7 @@ Obiettivo pratico:
 - `src/ast.c`: lexer, parser, simboli/tipi, AST.
 - `src/g_elf.c`: codegen ELF x86_64.
 - `src/g_asm.c`: emissione assembly testuale.
-- `src/g_ast.c`: emissione AST intermedia (llvm/simbolica).
+- `src/g_llvm.c`: emissione AST intermedia (llvm/simbolica).
 - `src/g_interpreter.c`: interprete AST.
 - `src/cpu.c`: runner per output `.llvm`.
 - `src/minilib.c`: include wrapper verso `lib/minilib.c`.
@@ -27,6 +27,7 @@ Obiettivo pratico:
 
 Prerequisiti host minimi:
 - compilatore C host (`cc`/`gcc`/`clang`) per il primo bootstrap,
+- `tcc` opzionale (target dedicati `*-tcc`),
 - ambiente Linux x86_64.
 
 Comandi:
@@ -35,6 +36,20 @@ Comandi:
 make cc
 make cpu
 make all
+```
+
+Build con TinyCC:
+
+```bash
+make cc-tcc
+make cpu-tcc
+make all-tcc
+```
+
+Oppure override diretto del compiler host:
+
+```bash
+make CC=tcc CFLAGS="-O0" all
 ```
 
 Pulizia:
@@ -137,7 +152,7 @@ Pipeline:
 3. Backend selezionato:
 - `g_elf.c` -> ELF x86_64 eseguibile,
 - `g_asm.c` -> assembly,
-- `g_ast.c` -> IR testuale,
+- `g_llvm.c` -> IR testuale,
 - `g_interpreter.c` -> esecuzione interpretata.
 
 Il backend ELF emette direttamente immagine ELF senza invocare assembler/linker esterni nella fase di compilazione target.

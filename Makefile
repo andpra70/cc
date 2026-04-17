@@ -1,7 +1,9 @@
 CC ?= cc
-CFLAGS ?= -O0
+CFLAGS ?= -O0 
+TCC ?= tcc
+TCCFLAGS ?= -O0
 
-cc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_ast.c src/minilib.c
+cc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_llvm.c src/minilib.c
 	$(CC) $(CFLAGS) src/cc.c -o cc
 
 cpu: src/cpu.c src/minilib.c
@@ -9,8 +11,16 @@ cpu: src/cpu.c src/minilib.c
 
 all: cc cpu
 
+cc-tcc: src/cc.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_llvm.c src/minilib.c
+	$(TCC) $(TCCFLAGS) src/cc.c -o cc.tcc
+
+cpu-tcc: src/cpu.c src/minilib.c
+	$(TCC) $(TCCFLAGS) src/cpu.c -o cpu.tcc -lm
+
+all-tcc: cc-tcc cpu-tcc
+
 clean:
-	rm -f *.elf2 *.elf *.llvm cc cpu compiler tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
+	rm -f *.elf2 *.elf *.llvm cc cpu cc.tcc cpu.tcc compiler tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
 
 test: clean all src/test.c
 	./cc src/test.c -v -a -o test.llvm

@@ -121,6 +121,26 @@ long eval_expr(Node *node, long *vars) {
     case ND_COMMA:
       (void)eval_expr(node->lhs, vars);
       return eval_expr(node->rhs, vars);
+    case ND_CALL: {
+      long call_args[16];
+      long rv;
+      const char *direct;
+      const char *abi;
+      int argc = 0;
+      Node *a = node->args;
+      while (a && argc < 16) {
+        call_args[argc++] = eval_expr(a, vars);
+        a = a->next;
+      }
+      direct = node->name ? node->name : "";
+      abi = kernel_abi_symbol(direct);
+      rv = kernel_abi_call(abi ? abi : direct, call_args, argc);
+      if (rv == (long)KERNEL_ABI_UNKNOWN && abi && strcmp(abi, direct)) {
+        rv = kernel_abi_call(direct, call_args, argc);
+      }
+      if (rv == (long)KERNEL_ABI_UNKNOWN) return 0;
+      return rv;
+    }
     default: return 0;
   }
 }

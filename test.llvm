@@ -3,7 +3,7 @@ func @out_ch
   push.const 1
   addr.local @c ; off=8
   push.const 1
-  call @write 3
+  call @__kernel_abi_write 3
   drop
 endfunc
 

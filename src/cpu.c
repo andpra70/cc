@@ -8,6 +8,9 @@
 #include <sys/mman.h>
 #include <math.h>
 
+#define KERNEL_ABI_HOST_LIBC 1
+#include "../lib/kernel_abi.c"
+
 typedef long i64;
 
 enum {
@@ -637,61 +640,7 @@ static i64 fr_pop(Frame *fr) {
 }
 
 static i64 call_builtin(const char *name, i64 *args, int argc) {
-  if (!strcmp(name, "read") && argc >= 3) return (i64)read((int)args[0], (void *)(intptr_t)args[1], (size_t)args[2]);
-  if (!strcmp(name, "write") && argc >= 3) return (i64)write((int)args[0], (const void *)(intptr_t)args[1], (size_t)args[2]);
-  if (!strcmp(name, "open") && argc >= 3) return (i64)open((const char *)(intptr_t)args[0], (int)args[1], (int)args[2]);
-  if (!strcmp(name, "open") && argc >= 3) return (i64)open((const char *)(intptr_t)args[0], (int)args[1], (mode_t)args[2]);
-  if (!strcmp(name, "close") && argc >= 1) return (i64)close((int)args[0]);
-  if (!strcmp(name, "mmap") && argc >= 6) return (i64)(intptr_t)mmap((void *)(intptr_t)args[0], (size_t)args[1], (int)args[2], (int)args[3], (int)args[4], (off_t)args[5]);
-  if (!strcmp(name, "munmap") && argc >= 2) return (i64)munmap((void *)(intptr_t)args[0], (size_t)args[1]);
-  if (!strcmp(name, "malloc") && argc >= 1) return (i64)(intptr_t)malloc((size_t)args[0]);
-  if (!strcmp(name, "free") && argc >= 1) {
-    free((void *)(intptr_t)args[0]);
-    return 0;
-  }
-  if (!strcmp(name, "calloc") && argc >= 2) return (i64)(intptr_t)calloc((size_t)args[0], (size_t)args[1]);
-  if (!strcmp(name, "realloc") && argc >= 2) return (i64)(intptr_t)realloc((void *)(intptr_t)args[0], (size_t)args[1]);
-  if (!strcmp(name, "strlen") && argc >= 1) return (i64)strlen((const char *)(intptr_t)args[0]);
-  if (!strcmp(name, "strcmp") && argc >= 2) return (i64)strcmp((const char *)(intptr_t)args[0], (const char *)(intptr_t)args[1]);
-  if (!strcmp(name, "memcpy") && argc >= 3) return (i64)(intptr_t)memcpy((void *)(intptr_t)args[0], (const void *)(intptr_t)args[1], (size_t)args[2]);
-  if (!strcmp(name, "memset") && argc >= 3) return (i64)(intptr_t)memset((void *)(intptr_t)args[0], (int)args[1], (size_t)args[2]);
-  if (!strcmp(name, "strchr") && argc >= 2) return (i64)(intptr_t)strchr((const char *)(intptr_t)args[0], (int)args[1]);
-  if (!strcmp(name, "strrchr") && argc >= 2) return (i64)(intptr_t)strrchr((const char *)(intptr_t)args[0], (int)args[1]);
-  if (!strcmp(name, "isspace") && argc >= 1) return (i64)isspace((int)args[0]);
-  if (!strcmp(name, "isdigit") && argc >= 1) return (i64)isdigit((int)args[0]);
-  if (!strcmp(name, "isalpha") && argc >= 1) return (i64)isalpha((int)args[0]);
-  if (!strcmp(name, "isalnum") && argc >= 1) return (i64)isalnum((int)args[0]);
-  if (!strcmp(name, "strtod") && argc >= 1) {
-    char *endp = NULL;
-    double d = strtod((const char *)(intptr_t)args[0], argc >= 2 ? &endp : NULL);
-    if (argc >= 2) {
-      i64 *slot = (i64 *)(intptr_t)args[1];
-      if (slot) *slot = (i64)(intptr_t)endp;
-    }
-    return (i64)d;
-  }
-  if (!strcmp(name, "printf") && argc >= 1) {
-    const char *fmt = (const char *)(intptr_t)args[0];
-    if (argc == 1) return (i64)printf("%s", fmt);
-    if (argc == 2) return (i64)printf(fmt, args[1]);
-    if (argc == 3) return (i64)printf(fmt, args[1], args[2]);
-    if (argc == 4) return (i64)printf(fmt, args[1], args[2], args[3]);
-    if (argc == 5) return (i64)printf(fmt, args[1], args[2], args[3], args[4]);
-    return (i64)printf(fmt, args[1], args[2], args[3], args[4], args[5]);
-  }
-  if (!strcmp(name, "eprintf") && argc >= 1) {
-    const char *fmt = (const char *)(intptr_t)args[0];
-    if (argc == 1) return (i64)fprintf(stderr, "%s", fmt);
-    if (argc == 2) return (i64)fprintf(stderr, fmt, args[1]);
-    if (argc == 3) return (i64)fprintf(stderr, fmt, args[1], args[2]);
-    if (argc == 4) return (i64)fprintf(stderr, fmt, args[1], args[2], args[3]);
-    if (argc == 5) return (i64)fprintf(stderr, fmt, args[1], args[2], args[3], args[4]);
-    return (i64)fprintf(stderr, fmt, args[1], args[2], args[3], args[4], args[5]);
-  }
-  if (!strcmp(name, "exit") && argc >= 1) {
-    exit((int)args[0]);
-  }
-  return (i64)0x7fffffff00000000LL;
+  return (i64)kernel_abi_call(name, (long *)args, argc);
 }
 
 static i64 run_function(Program *p, Function *fn, i64 *args, int argc) {
@@ -831,7 +780,7 @@ static i64 run_function(Program *p, Function *fn, i64 *args, int argc) {
         if (n > 16) n = 16;
         for (i = n - 1; i >= 0; i--) call_args[i] = fr_pop(&fr);
         ret = call_builtin(in->name ? in->name : "", call_args, n);
-        if (ret != (i64)0x7fffffff00000000LL) {
+        if (ret != (i64)KERNEL_ABI_UNKNOWN) {
           fr_push(&fr, ret);
           break;
         }
