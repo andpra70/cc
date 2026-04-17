@@ -1,13 +1,11 @@
 
-#include <dlfcn.h> // Header necessario per le funzioni dl*
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <dlfcn.h> // Header necessario per le funzioni dl*
+#include <dlfcn.h>
 
 int main() {
     void *handle;
-    double (*coseno)(double); // Puntatore a funzione
+    void *coseno_addr;
     char *error;
 
     // 1. Apriamo la libreria dinamica
@@ -21,6 +19,20 @@ int main() {
     dlerror();
 
     // 2. Cerchiamo l'indirizzo della funzione "cos"
+    coseno_addr = dlsym(handle, "cos");
+
+    if ((error = dlerror()) != NULL)  {
+        fprintf(stderr, "%s\n", error);
+        exit(EXIT_FAILURE);
+    }
+
+    // 3. Verifica minima: simbolo trovato
+    if (!coseno_addr) {
+        fprintf(stderr, "Simbolo cos non trovato\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("dlsym(cos) = %p\n", coseno_addr);
+    // 2. Cerchiamo l'indirizzo della funzione "cos"
     // dlsym restituisce un void*, quindi facciamo il cast al nostro puntatore
     coseno = (double (*)(double)) dlsym(handle, "cos");
 
@@ -31,7 +43,6 @@ int main() {
 
     // 3. Usiamo la funzione caricata a runtime
     printf("Il coseno di 2.0 è: %f\n", (*coseno)(2.0));
-
     // 4. Chiudiamo il riferimento alla libreria
     dlclose(handle);
 

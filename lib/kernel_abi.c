@@ -205,6 +205,10 @@ long kernel_abi_call(const char *name, long *args, int argc) {
   return (long)KERNEL_ABI_UNKNOWN;
 }
 
+long kernel_abi_call_ptr(long fp, long *args, int argc) {
+  return abi_call_ptr((void *)fp, args, argc);
+}
+
 long __kernel_abi_read(int fd, void *buf, size_t count) {
   return read(fd, buf, count);
 }

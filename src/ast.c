@@ -1391,6 +1391,95 @@ int is_decl_start_token() {
   return 0;
 }
 
+int skip_paren_group_tokens() {
+  int depth;
+  if (token.type != '(') return 0;
+  depth = 0;
+  while (token.type != TK_EOF) {
+    if (token.type == '(') depth++;
+    else if (token.type == ')') {
+      depth--;
+      if (depth == 0) {
+        next();
+        return 1;
+      }
+    }
+    next();
+  }
+  return 0;
+}
+
+int try_parse_func_ptr_declarator(char **out_name, int *out_ptr) {
+  char *saved_src;
+  Token saved_tok;
+  int stars;
+  char *name;
+  if (token.type != '(') return 0;
+  saved_src = src;
+  saved_tok = token;
+  next();
+  stars = 0;
+  while (token.type == '*') {
+    stars++;
+    next();
+  }
+  if (stars <= 0 || token.type != TK_ID) {
+    src = saved_src;
+    token = saved_tok;
+    return 0;
+  }
+  name = token.name;
+  next();
+  if (token.type != ')') {
+    src = saved_src;
+    token = saved_tok;
+    return 0;
+  }
+  next();
+  if (token.type != '(' || !skip_paren_group_tokens()) {
+    src = saved_src;
+    token = saved_tok;
+    return 0;
+  }
+  if (out_name) *out_name = name;
+  if (out_ptr) *out_ptr = stars;
+  return 1;
+}
+
+int try_parse_cast_type() {
+  char *saved_src;
+  Token saved_tok;
+  int tsz;
+  saved_src = src;
+  saved_tok = token;
+
+  tsz = parse_type_name_size();
+  if (tsz < 0) {
+    src = saved_src;
+    token = saved_tok;
+    return 0;
+  }
+  if (token.type == ')') return 1;
+  if (token.type == '(') {
+    char *decl_src = src;
+    Token decl_tok = token;
+    next();
+    if (token.type == '*') {
+      while (token.type == '*') next();
+      if (token.type == TK_ID) next();
+      if (token.type == ')') {
+        next();
+        if (token.type == '(' && skip_paren_group_tokens() && token.type == ')') return 1;
+      }
+    }
+    src = decl_src;
+    token = decl_tok;
+  }
+  src = saved_src;
+  token = saved_tok;
+  return 0;
+}
+
 void skip_initializer_brace() {
   int depth = 0;
   if (token.type != '{') return;
@@ -1468,18 +1557,26 @@ Node *parse_decl_stmt(int consume_semi) {
 
   while (token.type != TK_EOF) {
     int local_ptr = 0;
+    int fptr_ptr = 0;
+    int is_func_ptr_decl = 0;
     int is_array = 0;
     int arr_len = 1;
-    char *vname;
+    char *vname = NULL;
     while (token.type == '*') { local_ptr++; next(); }
-    if (token.type != TK_ID) break;
-    vname = token.name;
-    next();
+    if (token.type == TK_ID) {
+      vname = token.name;
+      next();
+    } else if (try_parse_func_ptr_declarator(&vname, &fptr_ptr)) {
+      local_ptr += fptr_ptr;
+      is_func_ptr_decl = 1;
+    } else {
+      break;
+    }
 
     Node *var = new_node(ND_VAR);
     var->name = vname;
 
-    while (token.type == '[') {
+    while (!is_func_ptr_decl && token.type == '[') {
       int n = 1;
       is_array = 1;
       next();
@@ -1560,14 +1657,37 @@ Node *primary() {
       }
     }
     next();
+    return node;
+  }
+  if (token.type == TK_STR) {
+    Node *node = new_node(ND_NUM);
+    node->val = 0;
+    node->name = token.name;
+    node->type_name = (char *)"char";
+    node->ptr_level = 1;
+    next();
+    return node;
+  }
+  long off = src_base ? (long)(src - src_base) : -1;
+  const char *ctx = src;
+  eprintf("Error: unsupported token in primary(): %d at offset %ld near \"%.40s\"\n", token.type, off, (long)(ctx ? ctx : ""), 0);
+  exit(1);
+}
+
+Node *postfix() {
+  Node *node = primary();
+  for (;;) {
     if (token.type == '(') {
+      Node *call = new_node(ND_CALL);
       int is_va_arg_builtin = 0;
+      Node head = {0};
+      Node *cur = &head;
       next();
-      node->kind = ND_CALL;
-      node->type_name = (char *)"int";
-      node->ptr_level = 0;
-      if (!strcmp(node->name, "va_arg") || !strcmp(node->name, "__builtin_va_arg")) is_va_arg_builtin = 1;
-      Node head = {0}; Node *cur = &head;
+      call->lhs = node;
+      call->type_name = (char *)"int";
+      call->ptr_level = 0;
+      if (node && node->kind == ND_ID && node->ptr_level == 0) call->name = node->name;
+      if (call->name && (!strcmp(call->name, "va_arg") || !strcmp(call->name, "__builtin_va_arg"))) is_va_arg_builtin = 1;
       if (is_va_arg_builtin) {
         if (token.type != ')') {
           cur->next = assign();
@@ -1590,33 +1710,16 @@ Node *primary() {
         }
       } else {
         while (token.type != ')') {
-          cur->next = assign(); cur = cur->next;
+          cur->next = assign();
+          cur = cur->next;
           if (token.type == ',') next();
         }
       }
       expect(')');
-      node->args = head.next;
+      call->args = head.next;
+      node = call;
+      continue;
     }
-    return node;
-  }
-  if (token.type == TK_STR) {
-    Node *node = new_node(ND_NUM);
-    node->val = 0;
-    node->name = token.name;
-    node->type_name = (char *)"char";
-    node->ptr_level = 1;
-    next();
-    return node;
-  }
-  long off = src_base ? (long)(src - src_base) : -1;
-  const char *ctx = src;
-  eprintf("Error: unsupported token in primary(): %d at offset %ld near \"%.40s\"\n", token.type, off, (long)(ctx ? ctx : ""), 0);
-  exit(1);
-}
-
-Node *postfix() {
-  Node *node = primary();
-  for (;;) {
     if (token.type == '[') {
       Node *idx;
       Node *scaled;
@@ -1773,10 +1876,8 @@ Node *unary() {
     char *saved_src = src;
     Token saved_tok = token;
     Node *casted = NULL;
-    int tsz;
     next();
-    tsz = parse_type_name_size();
-    if (tsz >= 0 && token.type == ')') {
+    if (try_parse_cast_type() && token.type == ')') {
       next();
       casted = unary();
       return casted;
@@ -2185,6 +2286,9 @@ Node *function() {
     if (token.type == TK_ID) {
       pname = token.name;
       next();
+    } else {
+      int fptr_ptr = 0;
+      if (try_parse_func_ptr_declarator(&pname, &fptr_ptr)) pptr += fptr_ptr;
     }
     while (token.type == '[') {
       pptr++; // array param decays to pointer

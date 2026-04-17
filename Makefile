@@ -29,3 +29,9 @@ self: clean all src/cc.c
 elfs: test
 	readelf -d test.elf | grep NEEDED
 	nm -D test.elf 
+
+push:
+	git add .
+	git commit -m "update"
+	git push
+	

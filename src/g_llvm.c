@@ -72,13 +72,17 @@ void ast_emit_expr(Node *node) {
       }
     case ND_CALL: {
       int argc = 0;
-      const char *callee;
+      const char *callee = NULL;
       for (Node *a = node->args; a; a = a->next) {
         ast_emit_expr(a);
         argc++;
       }
-      callee = kernel_abi_symbol(node->name ? node->name : "?");
-      printf("  call @%s %d\n", callee, argc);
+      if (node->name && *node->name) callee = kernel_abi_symbol(node->name);
+      if (callee) printf("  call @%s %d\n", callee, argc);
+      else {
+        ast_emit_expr(node->lhs);
+        printf("  call.indirect %d\n", argc);
+      }
       return;
     }
     case ND_NOT:

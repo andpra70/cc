@@ -6,5 +6,6 @@
 int kernel_abi_is_builtin(const char *name);
 const char *kernel_abi_symbol(const char *name);
 long kernel_abi_call(const char *name, long *args, int argc);
+long kernel_abi_call_ptr(long fp, long *args, int argc);
 
 #endif

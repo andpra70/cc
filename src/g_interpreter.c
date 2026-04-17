@@ -125,15 +125,15 @@ long eval_expr(Node *node, long *vars) {
       long call_args[16];
       long rv;
       const char *direct;
-      const char *abi;
+      const char *abi = NULL;
       int argc = 0;
       Node *a = node->args;
-      direct = node->name ? node->name : "";
-      if (!strcmp(direct, "va_start") || !strcmp(direct, "__builtin_va_start")) {
+      direct = (node->name && *node->name) ? node->name : NULL;
+      if (direct && (!strcmp(direct, "va_start") || !strcmp(direct, "__builtin_va_start"))) {
         if (node->args && node->args->kind == ND_ID && node->args->sym) slot_set(node->args->sym, vars, 0);
         return 0;
       }
-      if (!strcmp(direct, "va_arg") || !strcmp(direct, "__builtin_va_arg")) {
+      if (direct && (!strcmp(direct, "va_arg") || !strcmp(direct, "__builtin_va_arg"))) {
         long p = 0;
         if (node->args && node->args->kind == ND_ID && node->args->sym) p = slot_get(node->args->sym, vars);
         else if (node->args) p = eval_expr(node->args, vars);
@@ -144,11 +144,11 @@ long eval_expr(Node *node, long *vars) {
           return v;
         }
       }
-      if (!strcmp(direct, "va_end") || !strcmp(direct, "__builtin_va_end")) {
+      if (direct && (!strcmp(direct, "va_end") || !strcmp(direct, "__builtin_va_end"))) {
         if (node->args && node->args->kind == ND_ID && node->args->sym) slot_set(node->args->sym, vars, 0);
         return 0;
       }
-      if (!strcmp(direct, "va_copy") || !strcmp(direct, "__builtin_va_copy")) {
+      if (direct && (!strcmp(direct, "va_copy") || !strcmp(direct, "__builtin_va_copy"))) {
         if (node->args && node->args->next && node->args->kind == ND_ID && node->args->sym) {
           long srcv = 0;
           if (node->args->next->kind == ND_ID && node->args->next->sym) srcv = slot_get(node->args->next->sym, vars);
@@ -161,10 +161,15 @@ long eval_expr(Node *node, long *vars) {
         call_args[argc++] = eval_expr(a, vars);
         a = a->next;
       }
-      abi = kernel_abi_symbol(direct);
-      rv = kernel_abi_call(abi ? abi : direct, call_args, argc);
-      if (rv == (long)KERNEL_ABI_UNKNOWN && abi && strcmp(abi, direct)) {
-        rv = kernel_abi_call(direct, call_args, argc);
+      if (!direct) {
+        long fp = eval_expr(node->lhs, vars);
+        rv = kernel_abi_call_ptr(fp, call_args, argc);
+      } else {
+        abi = kernel_abi_symbol(direct);
+        rv = kernel_abi_call(abi ? abi : direct, call_args, argc);
+        if (rv == (long)KERNEL_ABI_UNKNOWN && abi && strcmp(abi, direct)) {
+          rv = kernel_abi_call(direct, call_args, argc);
+        }
       }
       if (rv == (long)KERNEL_ABI_UNKNOWN) return 0;
       return rv;
