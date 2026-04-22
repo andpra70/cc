@@ -173,6 +173,24 @@ int test_bitor() {
   return (a | b) == 15;
 }
 
+int test_mod() {
+  int a = 29;
+  int b = 6;
+  return (a % b) == 5;
+}
+
+int test_mod_assign() {
+  int a = 29;
+  a %= 6;
+  return a == 5;
+}
+
+int test_pow() {
+  int a = 2 ** 5;
+  int b = 3 ** 3;
+  return a == 32 && b == 27;
+}
+
 int test_casts() {
   int *p;
   long v;
@@ -217,6 +235,9 @@ int main() {
   ok = test_ternary(); report("ternary", ok); if (!ok) fails = fails + 1;
   ok = test_bitand(); report("bitand", ok); if (!ok) fails = fails + 1;
   ok = test_bitor(); report("bitor", ok); if (!ok) fails = fails + 1;
+  ok = test_mod(); report("mod", ok); if (!ok) fails = fails + 1;
+  ok = test_mod_assign(); report("mod_assign", ok); if (!ok) fails = fails + 1;
+  ok = test_pow(); report("pow", ok); if (!ok) fails = fails + 1;
   ok = test_casts(); report("casts", ok); if (!ok) fails = fails + 1;
   ok = test_dyn(); report("dyn", ok); if (!ok) fails = fails + 1;
 

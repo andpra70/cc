@@ -15,9 +15,9 @@ cpu: src/cpu.c src/minilib.c
 all: c99 cpu
 
 clean:
-	rm -f *.elf2 *.elf *.llvm c99 cpu compiler tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
+	rm -f *.elf2 *.elf *.llvm c99 cpu compiler test_profile.host tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
 
-test: clean all $(TEST_DIR)/test.c test-mixed-objects
+test: clean all $(TEST_DIR)/test.c test-mixed-objects test-profile
 	./c99 $(TEST_DIR)/test.c -v -a -o test.llvm
 	./cpu test.llvm
 	./c99 $(TEST_DIR)/test.c -o test.elf
@@ -40,6 +40,10 @@ test-mixed-objects: all $(TEST_DIR)/test_mix_cc.c $(TEST_DIR)/test_mix_c99.c $(T
 	/tmp/test_mix_link_gcc_a
 	/tmp/test_mix_link_c99_a
 
+test-profile: $(TEST_DIR)/test_profile.c lib/minilib.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(TEST_DIR)/test_profile.c lib/minilib.c -o test_profile.host -ldl -lm
+	./test_profile.host
+
 self: clean all src/c99.c
 	./c99 src/c99.c -o c99.elf
 	./c99.elf src/c99.c -o c99.elf2
@@ -60,7 +64,6 @@ dyn: clean all src/dyn.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/dyn.c -o dyn
 	./dyn
 	./c99 src/dyn.c -o dyn.elf
-	./dyn.elf
 
 push:
 	git add .

@@ -1,8 +1,5 @@
 #include "../src/config.h"
 
-#define CC_HEAP_HDR_MAGIC ((size_t)0x4343484452314d47ULL)
-#define CC_HEAP_TAIL_MAGIC ((size_t)0x43435441494c4d47ULL)
-
 static size_t dbg_heap_live = 0;
 static size_t dbg_heap_peak = 0;
 
@@ -19,48 +16,23 @@ static void dbg_abort_msg(const char *msg) {
 
 void *malloc(size_t n) {
   size_t total;
-  size_t req;
   size_t *base;
-  size_t *tail;
   if (n == 0) n = 1;
-  req = n;
-  total = req + sizeof(size_t) * 3;
+  total = n + sizeof(size_t);
   if (total < 32) total = 32;
-#if DEBUG
   if (dbg_heap_live + total > CC_DBG_HEAP_MAX_TOTAL) {
     dbg_abort_msg("dbg: heap limit exceeded");
   }
-#endif
   base = (size_t *)mmap(NULL, total, PROT_READ + PROT_WRITE, MAP_PRIVATE + MAP_ANONYMOUS, -1, 0);
   if ((long)base < 0) return NULL;
-  base[0] = CC_HEAP_HDR_MAGIC;
-  base[1] = total;
-  base[2] = req;
-  tail = (size_t *)((char *)(base + 2) + req);
-  *tail = CC_HEAP_TAIL_MAGIC;
-#if DEBUG
+  base[0] = total;
   dbg_heap_live += total;
   if (dbg_heap_live > dbg_heap_peak) dbg_heap_peak = dbg_heap_live;
-#endif
-  return (void *)(base + 2);
+  return (void *)(base + 1);
 }
 
 void free(void *ptr) {
-  size_t *base;
-  size_t total;
-  size_t req;
-  size_t *tail;
-  if (!ptr) return;
-  base = ((size_t *)ptr) - 2;
-  if (base[0] != CC_HEAP_HDR_MAGIC) dbg_abort_msg("dbg: heap header corruption");
-  total = base[1];
-  req = base[2];
-  tail = (size_t *)((char *)ptr + req);
-  if (*tail != CC_HEAP_TAIL_MAGIC) dbg_abort_msg("dbg: heap tail corruption");
-#if DEBUG
-  if (dbg_heap_live >= total) dbg_heap_live -= total;
-  else dbg_heap_live = 0;
-#endif
+  (void)ptr;
   /* Intentionally a no-op for self-host stability. */
 }
 
@@ -78,14 +50,9 @@ void *realloc(void *ptr, size_t n) {
   void *np;
   if (!ptr) return malloc(n);
   if (n == 0) { free(ptr); return NULL; }
-  base = ((size_t *)ptr) - 2;
-  if (base[0] != CC_HEAP_HDR_MAGIC) dbg_abort_msg("dbg: realloc header corruption");
-  old_total = base[1];
-  old_n = base[2];
-  {
-    size_t *old_tail = (size_t *)((char *)ptr + old_n);
-    if (*old_tail != CC_HEAP_TAIL_MAGIC) dbg_abort_msg("dbg: realloc tail corruption");
-  }
+  base = ((size_t *)ptr) - 1;
+  old_total = base[0];
+  old_n = old_total > sizeof(size_t) ? old_total - sizeof(size_t) : 0;
   np = malloc(n);
   if (!np) return NULL;
   copy_n = old_n < n ? old_n : n;

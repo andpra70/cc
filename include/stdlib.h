@@ -12,6 +12,8 @@ void *calloc(size_t n, size_t sz);
 void *realloc(void *ptr, size_t n);
 size_t dbg_heap_live_bytes(void);
 size_t dbg_heap_peak_bytes(void);
+size_t dbg_stack_peak_bytes(void);
+void dbg_stack_reset(void);
 
 int atoi(const char *s);
 long strtol(const char *s, char **endptr, int base);

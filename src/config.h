@@ -1,9 +1,7 @@
 #ifndef CC_CONFIG_H
 #define CC_CONFIG_H
 
-#ifndef DEBUG
 #define DEBUG 1
-#endif
 
 /*
  * Memory / footprint tuning knobs.

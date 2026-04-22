@@ -78,6 +78,22 @@ long eval_expr(Node *node, long *vars) {
       if (r == 0) return 0;
       return eval_expr(node->lhs, vars) / r;
     }
+    case ND_MOD: {
+      long r = eval_expr(node->rhs, vars);
+      if (r == 0) return 0;
+      return eval_expr(node->lhs, vars) % r;
+    }
+    case ND_POW: {
+      long base = eval_expr(node->lhs, vars);
+      long exp = eval_expr(node->rhs, vars);
+      long out = 1;
+      if (exp < 0) return 0;
+      while (exp > 0) {
+        out = out * base;
+        exp = exp - 1;
+      }
+      return out;
+    }
     case ND_EQ: return eval_expr(node->lhs, vars) == eval_expr(node->rhs, vars);
     case ND_NE: return eval_expr(node->lhs, vars) != eval_expr(node->rhs, vars);
     case ND_LT: return eval_expr(node->lhs, vars) < eval_expr(node->rhs, vars);

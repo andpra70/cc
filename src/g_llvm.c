@@ -147,6 +147,8 @@ void ast_emit_expr(Node *node) {
     case ND_SUB: printf("  bin.sub\n"); break;
     case ND_MUL: printf("  bin.mul\n"); break;
     case ND_DIV: printf("  bin.div\n"); break;
+    case ND_MOD: printf("  bin.mod\n"); break;
+    case ND_POW: printf("  bin.pow\n"); break;
     case ND_EQ: printf("  cmp.eq\n"); break;
     case ND_NE: printf("  cmp.ne\n"); break;
     case ND_LT: printf("  cmp.lt\n"); break;

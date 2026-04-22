@@ -79,7 +79,7 @@ enum {
   TK_NUM = 256, TK_FLOAT_LIT, TK_ID, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_SWITCH, TK_CASE, TK_DEFAULT, TK_BREAK, TK_CONTINUE, TK_RETURN, 
   TK_INT, TK_VOID, TK_CHAR, TK_FLOAT,
   TK_EQ, TK_NE, TK_LE, TK_GE, TK_LOGIC_AND, TK_LOGIC_OR, TK_INC, TK_DEC, TK_ARROW, TK_STR, TK_SIZEOF,
-  TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_AND_ASSIGN,
+  TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_MOD_ASSIGN, TK_AND_ASSIGN,
   TK_EOF
 };
 
@@ -87,6 +87,7 @@ typedef struct {
   int type;
   long val;
   char *name;
+  char *pos;
 } Token;
 
 typedef struct Symbol Symbol;
@@ -156,6 +157,7 @@ char *tok_name(int t) {
     case TK_SUB_ASSIGN: return (char *)"TK_SUB_ASSIGN";
     case TK_MUL_ASSIGN: return (char *)"TK_MUL_ASSIGN";
     case TK_DIV_ASSIGN: return (char *)"TK_DIV_ASSIGN";
+    case TK_MOD_ASSIGN: return (char *)"TK_MOD_ASSIGN";
     case TK_AND_ASSIGN: return (char *)"TK_AND_ASSIGN";
     case TK_EOF: return (char *)"TK_EOF";
     default: break;
@@ -215,6 +217,7 @@ int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "TK_SUB_ASSIGN")) { *out = TK_SUB_ASSIGN; return 1; }
   if (!strcmp(name, "TK_MUL_ASSIGN")) { *out = TK_MUL_ASSIGN; return 1; }
   if (!strcmp(name, "TK_DIV_ASSIGN")) { *out = TK_DIV_ASSIGN; return 1; }
+  if (!strcmp(name, "TK_MOD_ASSIGN")) { *out = TK_MOD_ASSIGN; return 1; }
   if (!strcmp(name, "TK_AND_ASSIGN")) { *out = TK_AND_ASSIGN; return 1; }
   if (!strcmp(name, "TK_EOF")) { *out = TK_EOF; return 1; }
 
@@ -224,41 +227,43 @@ int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "ND_SUB")) { *out = 3; return 1; }
   if (!strcmp(name, "ND_MUL")) { *out = 4; return 1; }
   if (!strcmp(name, "ND_DIV")) { *out = 5; return 1; }
-  if (!strcmp(name, "ND_EQ")) { *out = 6; return 1; }
-  if (!strcmp(name, "ND_NE")) { *out = 7; return 1; }
-  if (!strcmp(name, "ND_LT")) { *out = 8; return 1; }
-  if (!strcmp(name, "ND_LE")) { *out = 9; return 1; }
-  if (!strcmp(name, "ND_GT")) { *out = 10; return 1; }
-  if (!strcmp(name, "ND_GE")) { *out = 11; return 1; }
-  if (!strcmp(name, "ND_AND")) { *out = 12; return 1; }
-  if (!strcmp(name, "ND_OR")) { *out = 13; return 1; }
-  if (!strcmp(name, "ND_BITAND")) { *out = 14; return 1; }
-  if (!strcmp(name, "ND_ASSIGN")) { *out = 15; return 1; }
-  if (!strcmp(name, "ND_IF")) { *out = 16; return 1; }
-  if (!strcmp(name, "ND_WHILE")) { *out = 17; return 1; }
-  if (!strcmp(name, "ND_FOR")) { *out = 18; return 1; }
-  if (!strcmp(name, "ND_SWITCH")) { *out = 19; return 1; }
-  if (!strcmp(name, "ND_CASE")) { *out = 20; return 1; }
-  if (!strcmp(name, "ND_DEFAULT")) { *out = 21; return 1; }
-  if (!strcmp(name, "ND_BREAK")) { *out = 22; return 1; }
-  if (!strcmp(name, "ND_CONTINUE")) { *out = 23; return 1; }
-  if (!strcmp(name, "ND_RETURN")) { *out = 24; return 1; }
-  if (!strcmp(name, "ND_BLOCK")) { *out = 25; return 1; }
-  if (!strcmp(name, "ND_FUNC")) { *out = 26; return 1; }
-  if (!strcmp(name, "ND_CALL")) { *out = 27; return 1; }
-  if (!strcmp(name, "ND_VAR")) { *out = 28; return 1; }
-  if (!strcmp(name, "ND_ADDR")) { *out = 29; return 1; }
-  if (!strcmp(name, "ND_DEREF")) { *out = 30; return 1; }
-  if (!strcmp(name, "ND_NOT")) { *out = 31; return 1; }
-  if (!strcmp(name, "ND_NEG")) { *out = 32; return 1; }
-  if (!strcmp(name, "ND_TERNARY")) { *out = 33; return 1; }
-  if (!strcmp(name, "ND_PRE_INC")) { *out = 34; return 1; }
-  if (!strcmp(name, "ND_PRE_DEC")) { *out = 35; return 1; }
-  if (!strcmp(name, "ND_POST_INC")) { *out = 36; return 1; }
-  if (!strcmp(name, "ND_POST_DEC")) { *out = 37; return 1; }
-  if (!strcmp(name, "ND_BNOT")) { *out = 38; return 1; }
-  if (!strcmp(name, "ND_COMMA")) { *out = 39; return 1; }
-  if (!strcmp(name, "ND_BITOR")) { *out = 40; return 1; }
+  if (!strcmp(name, "ND_MOD")) { *out = 6; return 1; }
+  if (!strcmp(name, "ND_POW")) { *out = 7; return 1; }
+  if (!strcmp(name, "ND_EQ")) { *out = 8; return 1; }
+  if (!strcmp(name, "ND_NE")) { *out = 9; return 1; }
+  if (!strcmp(name, "ND_LT")) { *out = 10; return 1; }
+  if (!strcmp(name, "ND_LE")) { *out = 11; return 1; }
+  if (!strcmp(name, "ND_GT")) { *out = 12; return 1; }
+  if (!strcmp(name, "ND_GE")) { *out = 13; return 1; }
+  if (!strcmp(name, "ND_AND")) { *out = 14; return 1; }
+  if (!strcmp(name, "ND_OR")) { *out = 15; return 1; }
+  if (!strcmp(name, "ND_BITAND")) { *out = 16; return 1; }
+  if (!strcmp(name, "ND_ASSIGN")) { *out = 17; return 1; }
+  if (!strcmp(name, "ND_IF")) { *out = 18; return 1; }
+  if (!strcmp(name, "ND_WHILE")) { *out = 19; return 1; }
+  if (!strcmp(name, "ND_FOR")) { *out = 20; return 1; }
+  if (!strcmp(name, "ND_SWITCH")) { *out = 21; return 1; }
+  if (!strcmp(name, "ND_CASE")) { *out = 22; return 1; }
+  if (!strcmp(name, "ND_DEFAULT")) { *out = 23; return 1; }
+  if (!strcmp(name, "ND_BREAK")) { *out = 24; return 1; }
+  if (!strcmp(name, "ND_CONTINUE")) { *out = 25; return 1; }
+  if (!strcmp(name, "ND_RETURN")) { *out = 26; return 1; }
+  if (!strcmp(name, "ND_BLOCK")) { *out = 27; return 1; }
+  if (!strcmp(name, "ND_FUNC")) { *out = 28; return 1; }
+  if (!strcmp(name, "ND_CALL")) { *out = 29; return 1; }
+  if (!strcmp(name, "ND_VAR")) { *out = 30; return 1; }
+  if (!strcmp(name, "ND_ADDR")) { *out = 31; return 1; }
+  if (!strcmp(name, "ND_DEREF")) { *out = 32; return 1; }
+  if (!strcmp(name, "ND_NOT")) { *out = 33; return 1; }
+  if (!strcmp(name, "ND_NEG")) { *out = 34; return 1; }
+  if (!strcmp(name, "ND_TERNARY")) { *out = 35; return 1; }
+  if (!strcmp(name, "ND_PRE_INC")) { *out = 36; return 1; }
+  if (!strcmp(name, "ND_PRE_DEC")) { *out = 37; return 1; }
+  if (!strcmp(name, "ND_POST_INC")) { *out = 38; return 1; }
+  if (!strcmp(name, "ND_POST_DEC")) { *out = 39; return 1; }
+  if (!strcmp(name, "ND_BNOT")) { *out = 40; return 1; }
+  if (!strcmp(name, "ND_COMMA")) { *out = 41; return 1; }
+  if (!strcmp(name, "ND_BITOR")) { *out = 42; return 1; }
   return 0;
 }
 
@@ -511,6 +516,7 @@ void next() {
   }
   if (!*src) {
     if (src_ptr > 0) { src = src_stack[--src_ptr]; next(); return; }
+    token.pos = src;
     token.type = TK_EOF;
     trace_token();
     return;
@@ -639,6 +645,7 @@ void next() {
   }
 
   if (isdigit(*src)) {
+    token.pos = src;
     if (src[0] == '0' && (src[1] == 'x' || src[1] == 'X')) {
       long v = 0;
       src += 2;
@@ -675,6 +682,7 @@ void next() {
   }
 
   if (*src == '\'') {
+    token.pos = src;
     int v = 0;
     src++;
     if (*src == '\\') {
@@ -698,6 +706,7 @@ void next() {
   }
 
   if (isalpha(*src) || *src == '_') {
+    token.pos = src;
     char *start = src;
     while (isalnum(*src) || *src == '_') src++;
     int len = src - start;
@@ -717,11 +726,6 @@ void next() {
     else if (!strcmp(name, "continue")) token.type = TK_CONTINUE;
     else if (!strcmp(name, "return")) token.type = TK_RETURN;
     else if (!strcmp(name, "sizeof")) token.type = TK_SIZEOF;
-    else if (!strcmp(name, "NULL")) { token.type = TK_NUM; token.val = 0; }
-    else if (!strcmp(name, "SEEK_SET")) { token.type = TK_NUM; token.val = 0; }
-    else if (!strcmp(name, "SEEK_END")) { token.type = TK_NUM; token.val = 2; }
-    else if (!strcmp(name, "INT32_MIN")) { token.type = TK_NUM; token.val = -2147483647 - 1; }
-    else if (!strcmp(name, "INT32_MAX")) { token.type = TK_NUM; token.val = 2147483647; }
     else if (!strcmp(name, "int")) token.type = TK_INT;
     else if (!strcmp(name, "char")) token.type = TK_CHAR;
     else if (!strcmp(name, "float")) token.type = TK_FLOAT;
@@ -748,6 +752,7 @@ void next() {
   }
 
   if (*src == '"') {
+    token.pos = src;
     src++;
     char *start = src;
     while (*src && *src != '"') {
@@ -765,12 +770,14 @@ void next() {
     return;
   }
 
+  token.pos = src;
   if (*src == '&' && src[1] == '&') { src += 2; token.type = TK_LOGIC_AND; trace_token(); return; }
   if (*src == '|' && src[1] == '|') { src += 2; token.type = TK_LOGIC_OR; trace_token(); return; }
   if (*src == '+' && src[1] == '=') { src += 2; token.type = TK_ADD_ASSIGN; trace_token(); return; }
   if (*src == '-' && src[1] == '=') { src += 2; token.type = TK_SUB_ASSIGN; trace_token(); return; }
   if (*src == '*' && src[1] == '=') { src += 2; token.type = TK_MUL_ASSIGN; trace_token(); return; }
   if (*src == '/' && src[1] == '=') { src += 2; token.type = TK_DIV_ASSIGN; trace_token(); return; }
+  if (*src == '%' && src[1] == '=') { src += 2; token.type = TK_MOD_ASSIGN; trace_token(); return; }
   if (*src == '&' && src[1] == '=') { src += 2; token.type = TK_AND_ASSIGN; trace_token(); return; }
   if (*src == '+' && src[1] == '+') { src += 2; token.type = TK_INC; trace_token(); return; }
   if (*src == '-' && src[1] == '-') { src += 2; token.type = TK_DEC; trace_token(); return; }
@@ -855,7 +862,7 @@ Symbol *add_local(char *name) {
 
 // --- AST ---
 typedef enum {
-  ND_NUM, ND_ID, ND_ADD, ND_SUB, ND_MUL, ND_DIV, ND_EQ, ND_NE, ND_LT, ND_LE, 
+  ND_NUM, ND_ID, ND_ADD, ND_SUB, ND_MUL, ND_DIV, ND_MOD, ND_POW, ND_EQ, ND_NE, ND_LT, ND_LE,
   ND_GT, ND_GE, ND_AND, ND_OR, ND_BITAND, ND_ASSIGN, ND_IF, ND_WHILE, ND_FOR, ND_SWITCH, ND_CASE, ND_DEFAULT, ND_BREAK, ND_CONTINUE, ND_RETURN, 
   ND_BLOCK, ND_FUNC, ND_CALL, ND_VAR, ND_ADDR, ND_DEREF, ND_NOT, ND_NEG, ND_TERNARY, ND_PRE_INC, ND_PRE_DEC, ND_POST_INC, ND_POST_DEC, ND_BNOT, ND_COMMA,
   ND_BITOR
@@ -1956,11 +1963,43 @@ Node *unary() {
   }
   return postfix();
 }
-Node *mul() {
+int consume_pow_operator() {
+  char *first_end;
+  char *saved_src;
+  Token saved_tok;
+  if (token.type != '*') return 0;
+  first_end = src;
+  saved_src = src;
+  saved_tok = token;
+  next();
+  if (token.type == '*' && token.pos == first_end) {
+    next();
+    return 1;
+  }
+  src = saved_src;
+  token = saved_tok;
+  return 0;
+}
+
+Node *power() {
   Node *node = unary();
+  if (consume_pow_operator()) {
+    Node *n = new_node(ND_POW);
+    n->lhs = node;
+    n->rhs = power();
+    n->type_name = (char *)"int";
+    n->ptr_level = 0;
+    return n;
+  }
+  return node;
+}
+
+Node *mul() {
+  Node *node = power();
   for (;;) {
-    if (token.type == '*') { next(); Node *n = new_node(ND_MUL); n->lhs = node; n->rhs = unary(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
-    else if (token.type == '/') { next(); Node *n = new_node(ND_DIV); n->lhs = node; n->rhs = unary(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
+    if (token.type == '*') { next(); Node *n = new_node(ND_MUL); n->lhs = node; n->rhs = power(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
+    else if (token.type == '/') { next(); Node *n = new_node(ND_DIV); n->lhs = node; n->rhs = power(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
+    else if (token.type == '%') { next(); Node *n = new_node(ND_MOD); n->lhs = node; n->rhs = power(); n->type_name = (char *)"int"; n->ptr_level = 0; node = n; }
     else return node;
   }
 }
@@ -2111,6 +2150,7 @@ Node *assign() {
     node = n;
   } else if (token.type == TK_ADD_ASSIGN || token.type == TK_SUB_ASSIGN ||
              token.type == TK_MUL_ASSIGN || token.type == TK_DIV_ASSIGN ||
+             token.type == TK_MOD_ASSIGN ||
              token.type == TK_AND_ASSIGN) {
     int op = ND_ADD;
     Node *n = new_node(ND_ASSIGN);
@@ -2119,6 +2159,7 @@ Node *assign() {
     if (token.type == TK_SUB_ASSIGN) op = ND_SUB;
     else if (token.type == TK_MUL_ASSIGN) op = ND_MUL;
     else if (token.type == TK_DIV_ASSIGN) op = ND_DIV;
+    else if (token.type == TK_MOD_ASSIGN) op = ND_MOD;
     else if (token.type == TK_AND_ASSIGN) op = ND_BITAND;
     next();
     rhs_node = assign();

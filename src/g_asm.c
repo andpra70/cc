@@ -213,6 +213,15 @@ void gen(Node *node) {
     case ND_SUB: printf("  sub rax, rdi\n"); break;
     case ND_MUL: printf("  imul rax, rdi\n"); break;
     case ND_DIV: printf("  cqo\n  idiv rdi\n"); break;
+    case ND_MOD: printf("  cqo\n  idiv rdi\n  mov rax, rdx\n"); break;
+    case ND_POW:
+      printf("  mov rcx, 1\n  mov rbx, rax\n  mov rdx, rdi\n");
+      printf(".Lpow_loop%d:\n", label_id);
+      printf("  cmp rdx, 0\n  je .Lpow_end%d\n", label_id);
+      printf("  imul rcx, rbx\n  sub rdx, 1\n  jmp .Lpow_loop%d\n", label_id);
+      printf(".Lpow_end%d:\n  mov rax, rcx\n", label_id);
+      label_id++;
+      break;
     case ND_EQ: printf("  cmp rax, rdi\n  sete al\n  movzx rax, al\n"); break;
     case ND_NE: printf("  cmp rax, rdi\n  setne al\n  movzx rax, al\n"); break;
     case ND_LT: printf("  cmp rax, rdi\n  setl al\n  movzx rax, al\n"); break;

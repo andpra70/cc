@@ -31,9 +31,12 @@ extern void *dlopen(const char *filename, int flags);
 extern void *dlsym(void *handle, const char *symbol);
 extern int dlclose(void *handle);
 extern char *dlerror(void);
+extern size_t dbg_heap_live_bytes(void);
+extern size_t dbg_heap_peak_bytes(void);
 
 static void *abi_dlopen_handle = 0;
 static uintptr_t dbg_stack_top = 0;
+static uintptr_t dbg_stack_peak_delta = 0;
 
 static void dbg_write_cstr(const char *s) {
   if (!s) return;
@@ -47,16 +50,25 @@ static void dbg_write_sym(const char *prefix, const char *name, const char *suff
 }
 
 static void dbg_check_stack(const char *where) {
-#if DEBUG
   uintptr_t sp_cur = (uintptr_t)&sp_cur;
   if (!dbg_stack_top) dbg_stack_top = sp_cur;
+  if (dbg_stack_top > sp_cur) {
+    uintptr_t delta = dbg_stack_top - sp_cur;
+    if (delta > dbg_stack_peak_delta) dbg_stack_peak_delta = delta;
+  }
   if (dbg_stack_top > sp_cur && (dbg_stack_top - sp_cur) > (uintptr_t)CC_DBG_STACK_MAX_DELTA) {
     dbg_write_sym("dbg: stack overflow guard in ", where, "\n");
     exit(111);
   }
-#else
-  (void)where;
-#endif
+}
+
+size_t dbg_stack_peak_bytes(void) {
+  return (size_t)dbg_stack_peak_delta;
+}
+
+void dbg_stack_reset(void) {
+  dbg_stack_top = 0;
+  dbg_stack_peak_delta = 0;
 }
 
 static long abi_call_ptr(void *fp, long *args, int argc) {
@@ -81,20 +93,12 @@ static long abi_call_ptr(void *fp, long *args, int argc) {
 static void *abi_default_handle() {
   dbg_check_stack("abi_default_handle");
   if (abi_dlopen_handle) return abi_dlopen_handle;
-#if DEBUG
   dbg_write_cstr("dbg: dlopen(NULL)\n");
-#endif
   abi_dlopen_handle = dlopen((const char *)0, RTLD_LAZY + RTLD_LOCAL);
-#if DEBUG
   if (!abi_dlopen_handle) dbg_write_cstr("dbg: dlopen(NULL) failed\n");
-#endif
-#if DEBUG
   if (!abi_dlopen_handle) dbg_write_cstr("dbg: dlopen(libc.so.6)\n");
-#endif
   if (!abi_dlopen_handle) abi_dlopen_handle = dlopen("libc.so.6", RTLD_LAZY + RTLD_LOCAL);
-#if DEBUG
   if (!abi_dlopen_handle) dbg_write_cstr("dbg: dlopen(libc.so.6) failed\n");
-#endif
   return abi_dlopen_handle;
 }
 
@@ -126,6 +130,10 @@ int kernel_abi_is_builtin(const char *name) {
   if (abi_name_eq(name, "free")) return 1;
   if (abi_name_eq(name, "calloc")) return 1;
   if (abi_name_eq(name, "realloc")) return 1;
+  if (abi_name_eq(name, "dbg_heap_live_bytes")) return 1;
+  if (abi_name_eq(name, "dbg_heap_peak_bytes")) return 1;
+  if (abi_name_eq(name, "dbg_stack_peak_bytes")) return 1;
+  if (abi_name_eq(name, "dbg_stack_reset")) return 1;
   if (abi_name_eq(name, "strlen")) return 1;
   if (abi_name_eq(name, "strcmp")) return 1;
   if (abi_name_eq(name, "memcpy")) return 1;
@@ -178,6 +186,10 @@ long kernel_abi_call(const char *name, long *args, int argc) {
   }
   if (abi_name_eq(name, "calloc") && argc >= 2) return (long)calloc((unsigned long)args[0], (unsigned long)args[1]);
   if (abi_name_eq(name, "realloc") && argc >= 2) return (long)realloc((void *)args[0], (unsigned long)args[1]);
+  if (abi_name_eq(name, "dbg_heap_live_bytes")) return (long)dbg_heap_live_bytes();
+  if (abi_name_eq(name, "dbg_heap_peak_bytes")) return (long)dbg_heap_peak_bytes();
+  if (abi_name_eq(name, "dbg_stack_peak_bytes")) return (long)dbg_stack_peak_bytes();
+  if (abi_name_eq(name, "dbg_stack_reset")) { dbg_stack_reset(); return 0; }
   if (abi_name_eq(name, "strlen") && argc >= 1) return (long)strlen((const char *)args[0]);
   if (abi_name_eq(name, "strcmp") && argc >= 2) return (long)strcmp((const char *)args[0], (const char *)args[1]);
   if (abi_name_eq(name, "memcpy") && argc >= 3) return (long)memcpy((void *)args[0], (const void *)args[1], (unsigned long)args[2]);
@@ -223,24 +235,18 @@ long kernel_abi_call(const char *name, long *args, int argc) {
   }
   if (abi_name_eq(name, "dlopen") && argc >= 1) {
     int flags = (argc >= 2) ? (int)args[1] : (RTLD_LAZY + RTLD_LOCAL);
-#if DEBUG
     dbg_write_sym("dbg: dlopen symbol=", (const char *)args[0], "\n");
-#endif
     return (long)dlopen((const char *)args[0], flags);
   }
   if (abi_name_eq(name, "dlsym") && argc >= 2) {
-#if DEBUG
     dbg_write_sym("dbg: dlsym symbol=", (const char *)args[1], "\n");
-#endif
     return (long)dlsym((void *)args[0], (const char *)args[1]);
   }
   if (abi_name_eq(name, "dlclose") && argc >= 1) {
     return (long)dlclose((void *)args[0]);
   }
   if (abi_name_eq(name, "dlerror")) {
-#if DEBUG
     dbg_write_cstr("dbg: dlerror\n");
-#endif
     return (long)dlerror();
   }
   if (abi_name_eq(name, "exit") && argc >= 1) {
@@ -250,9 +256,7 @@ long kernel_abi_call(const char *name, long *args, int argc) {
     void *h = abi_default_handle();
     void *fp = 0;
     if (h && name) fp = dlsym(h, name);
-#if DEBUG
     if (!fp && name) dbg_write_sym("dbg: unresolved symbol=", name, "\n");
-#endif
     if (fp) return abi_call_ptr(fp, args, argc);
   }
   return (long)KERNEL_ABI_UNKNOWN;

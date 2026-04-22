@@ -11,6 +11,13 @@
 #define KERNEL_ABI_HOST_LIBC 1
 #include "../lib/kernel_abi.c"
 
+/*
+ * CPU tool does not link lib/stdlib.c, provide profiling stubs so
+ * kernel_abi builtins resolve during host-only IR execution.
+ */
+size_t dbg_heap_live_bytes(void) { return 0; }
+size_t dbg_heap_peak_bytes(void) { return 0; }
+
 typedef long i64;
 
 enum {
@@ -45,6 +52,8 @@ enum {
   OP_BIN_SUB,
   OP_BIN_MUL,
   OP_BIN_DIV,
+  OP_BIN_MOD,
+  OP_BIN_POW,
   OP_CMP_EQ,
   OP_CMP_NE,
   OP_CMP_LT,
@@ -536,6 +545,12 @@ static int parse_ir(Program *p, const char *path) {
     } else if (!strcmp(t, "bin.div")) {
       in.op = OP_BIN_DIV;
       fn_add_instr(cur, in);
+    } else if (!strcmp(t, "bin.mod")) {
+      in.op = OP_BIN_MOD;
+      fn_add_instr(cur, in);
+    } else if (!strcmp(t, "bin.pow")) {
+      in.op = OP_BIN_POW;
+      fn_add_instr(cur, in);
     } else if (!strcmp(t, "cmp.eq")) {
       in.op = OP_CMP_EQ;
       fn_add_instr(cur, in);
@@ -830,6 +845,26 @@ static i64 run_function(Program *p, Function *fn, i64 *args, int argc) {
       case OP_BIN_DIV:
         b = fr_pop(&fr); a = fr_pop(&fr); fr_push(&fr, b ? a / b : 0);
         break;
+      case OP_BIN_MOD:
+        b = fr_pop(&fr); a = fr_pop(&fr); fr_push(&fr, b ? a % b : 0);
+        break;
+      case OP_BIN_POW: {
+        i64 e;
+        i64 out;
+        b = fr_pop(&fr); a = fr_pop(&fr);
+        if (b < 0) {
+          fr_push(&fr, 0);
+          break;
+        }
+        e = b;
+        out = 1;
+        while (e > 0) {
+          out = out * a;
+          e--;
+        }
+        fr_push(&fr, out);
+        break;
+      }
       case OP_CMP_EQ:
         b = fr_pop(&fr); a = fr_pop(&fr); fr_push(&fr, a == b);
         break;
