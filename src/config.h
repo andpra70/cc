@@ -1,6 +1,10 @@
 #ifndef CC_CONFIG_H
 #define CC_CONFIG_H
 
+#ifndef DEBUG
+#define DEBUG 1
+#endif
+
 /*
  * Memory / footprint tuning knobs.
  * Increase for larger inputs or deeper nesting.
@@ -31,5 +35,9 @@
 
 /* Parser/codegen guard against pathological/cyclic call argument lists */
 #define CC_CFG_CALL_ARG_GUARD_MAX 128
+
+/* Debug guards (active when DEBUG != 0) */
+#define CC_DBG_STACK_MAX_DELTA (8 * 1024 * 1024)
+#define CC_DBG_HEAP_MAX_TOTAL (256 * 1024 * 1024)
 
 #endif

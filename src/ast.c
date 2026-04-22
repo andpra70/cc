@@ -106,6 +106,10 @@ typedef struct CompilerGlobalState {
   UserTypeDef *user_types;
   TypedefAlias *typedef_aliases;
   int anon_type_counter;
+  int elf_cur_fn_fixed_args;
+  int elf_cur_fn_is_variadic;
+  int elf_cur_fn_arg_home_base;
+  char *elf_cur_fn_name;
 } CompilerGlobalState;
 
 char *src;
@@ -448,6 +452,38 @@ int lookup_global_info(const char *name, int *offset, const char **type_name, in
     if (ptr_level) *ptr_level = 0;
     if (is_array) *is_array = 0;
     if (bytes) *bytes = (int)sizeof(probe.anon_type_counter);
+    return 1;
+  }
+  if (!strcmp(name, "elf_cur_fn_fixed_args")) {
+    if (offset) *offset = (int)((char *)&probe.elf_cur_fn_fixed_args - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_cur_fn_fixed_args);
+    return 1;
+  }
+  if (!strcmp(name, "elf_cur_fn_is_variadic")) {
+    if (offset) *offset = (int)((char *)&probe.elf_cur_fn_is_variadic - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_cur_fn_is_variadic);
+    return 1;
+  }
+  if (!strcmp(name, "elf_cur_fn_arg_home_base")) {
+    if (offset) *offset = (int)((char *)&probe.elf_cur_fn_arg_home_base - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_cur_fn_arg_home_base);
+    return 1;
+  }
+  if (!strcmp(name, "elf_cur_fn_name")) {
+    if (offset) *offset = (int)((char *)&probe.elf_cur_fn_name - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_cur_fn_name);
     return 1;
   }
   return 0;

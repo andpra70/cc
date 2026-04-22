@@ -10,6 +10,8 @@ void *malloc(size_t n);
 void free(void *ptr);
 void *calloc(size_t n, size_t sz);
 void *realloc(void *ptr, size_t n);
+size_t dbg_heap_live_bytes(void);
+size_t dbg_heap_peak_bytes(void);
 
 int atoi(const char *s);
 long strtol(const char *s, char **endptr, int base);

@@ -491,6 +491,7 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
           if (!elf_cur_fn_name || strcmp(elf_cur_fn_name, abi)) lbl = find_func_label(c, abi);
         }
         if (lbl >= 0) emit_call_label(c, lbl);
+        else if (emit_builtin_syscall_fallback(c, direct)) {}
         else if (abi_call_lbl >= 0 && (!elf_cur_fn_name || strcmp(elf_cur_fn_name, "kernel_abi_call"))) {
           const char *dyn_name = (abi && *abi) ? abi : direct;
           /* Build args[0..5] on stack then call kernel_abi_call(name, args, argc). */
@@ -507,8 +508,7 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
           bb_emit1(&c->code, 0xba); bb_emit4(&c->code, argc);                                                                      /* mov edx,argc */
           emit_call_label(c, abi_call_lbl);
           bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc4); bb_emit1(&c->code, 0x30);               /* add rsp,48 */
-        } else if (emit_builtin_syscall_fallback(c, direct)) {}
-        else { bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); } /* xor eax,eax */
+        } else { bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); } /* xor eax,eax */
       }
       emit_push_rax(c);
       return;
@@ -832,8 +832,8 @@ int max_node_offset(Node *node) {
 }
 
 void emit_function_elf(ElfCtx *c, FnLabel *fn) {
-  elf_cur_fn_fixed_args = 0;
-  elf_cur_fn_is_variadic = 0;
+  elf_cur_fn_fixed_args = (fn && fn->fn) ? fn->fn->fixed_args : 0;
+  elf_cur_fn_is_variadic = (fn && fn->fn) ? fn->fn->is_variadic : 0;
   elf_cur_fn_name = (fn && fn->name) ? fn->name : 0;
   ctx_place_label(c, fn->label);
   bb_emit1(&c->code, 0x55);                               // push rbp

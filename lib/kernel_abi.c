@@ -5,6 +5,8 @@
 
 #include "../include/kernel_abi.h"
 #include <dlfcn.h>
+#include <stdint.h>
+#include "../src/config.h"
 
 extern ssize_t read(int fd, void *buf, size_t count);
 extern ssize_t write(int fd, const void *buf, size_t count);
@@ -31,6 +33,31 @@ extern int dlclose(void *handle);
 extern char *dlerror(void);
 
 static void *abi_dlopen_handle = 0;
+static uintptr_t dbg_stack_top = 0;
+
+static void dbg_write_cstr(const char *s) {
+  if (!s) return;
+  write(2, s, strlen(s));
+}
+
+static void dbg_write_sym(const char *prefix, const char *name, const char *suffix) {
+  if (prefix) dbg_write_cstr(prefix);
+  if (name) dbg_write_cstr(name);
+  if (suffix) dbg_write_cstr(suffix);
+}
+
+static void dbg_check_stack(const char *where) {
+#if DEBUG
+  uintptr_t sp_cur = (uintptr_t)&sp_cur;
+  if (!dbg_stack_top) dbg_stack_top = sp_cur;
+  if (dbg_stack_top > sp_cur && (dbg_stack_top - sp_cur) > (uintptr_t)CC_DBG_STACK_MAX_DELTA) {
+    dbg_write_sym("dbg: stack overflow guard in ", where, "\n");
+    exit(111);
+  }
+#else
+  (void)where;
+#endif
+}
 
 static long abi_call_ptr(void *fp, long *args, int argc) {
   long (*f0)(void);
@@ -52,9 +79,22 @@ static long abi_call_ptr(void *fp, long *args, int argc) {
 }
 
 static void *abi_default_handle() {
+  dbg_check_stack("abi_default_handle");
   if (abi_dlopen_handle) return abi_dlopen_handle;
+#if DEBUG
+  dbg_write_cstr("dbg: dlopen(NULL)\n");
+#endif
   abi_dlopen_handle = dlopen((const char *)0, RTLD_LAZY + RTLD_LOCAL);
+#if DEBUG
+  if (!abi_dlopen_handle) dbg_write_cstr("dbg: dlopen(NULL) failed\n");
+#endif
+#if DEBUG
+  if (!abi_dlopen_handle) dbg_write_cstr("dbg: dlopen(libc.so.6)\n");
+#endif
   if (!abi_dlopen_handle) abi_dlopen_handle = dlopen("libc.so.6", RTLD_LAZY + RTLD_LOCAL);
+#if DEBUG
+  if (!abi_dlopen_handle) dbg_write_cstr("dbg: dlopen(libc.so.6) failed\n");
+#endif
   return abi_dlopen_handle;
 }
 
@@ -124,6 +164,7 @@ const char *kernel_abi_symbol(const char *name) {
 }
 
 long kernel_abi_call(const char *name, long *args, int argc) {
+  dbg_check_stack("kernel_abi_call");
   if (abi_name_eq(name, "read") && argc >= 3) return (long)read((int)args[0], (void *)args[1], (unsigned long)args[2]);
   if (abi_name_eq(name, "write") && argc >= 3) return (long)write((int)args[0], (const void *)args[1], (unsigned long)args[2]);
   if (abi_name_eq(name, "open") && argc >= 3) return (long)open((const char *)args[0], (int)args[1], (int)args[2]);
@@ -182,15 +223,24 @@ long kernel_abi_call(const char *name, long *args, int argc) {
   }
   if (abi_name_eq(name, "dlopen") && argc >= 1) {
     int flags = (argc >= 2) ? (int)args[1] : (RTLD_LAZY + RTLD_LOCAL);
+#if DEBUG
+    dbg_write_sym("dbg: dlopen symbol=", (const char *)args[0], "\n");
+#endif
     return (long)dlopen((const char *)args[0], flags);
   }
   if (abi_name_eq(name, "dlsym") && argc >= 2) {
+#if DEBUG
+    dbg_write_sym("dbg: dlsym symbol=", (const char *)args[1], "\n");
+#endif
     return (long)dlsym((void *)args[0], (const char *)args[1]);
   }
   if (abi_name_eq(name, "dlclose") && argc >= 1) {
     return (long)dlclose((void *)args[0]);
   }
   if (abi_name_eq(name, "dlerror")) {
+#if DEBUG
+    dbg_write_cstr("dbg: dlerror\n");
+#endif
     return (long)dlerror();
   }
   if (abi_name_eq(name, "exit") && argc >= 1) {
@@ -200,6 +250,9 @@ long kernel_abi_call(const char *name, long *args, int argc) {
     void *h = abi_default_handle();
     void *fp = 0;
     if (h && name) fp = dlsym(h, name);
+#if DEBUG
+    if (!fp && name) dbg_write_sym("dbg: unresolved symbol=", name, "\n");
+#endif
     if (fp) return abi_call_ptr(fp, args, argc);
   }
   return (long)KERNEL_ABI_UNKNOWN;
