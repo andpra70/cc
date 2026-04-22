@@ -1221,280 +1221,60 @@ int write_ar_single_member_fd(int out_fd, const char *member_name, const unsigne
   return 0;
 }
 
-int write_elf_exec_fd(BinBuf *code, size_t entry_off, size_t *label_pos, FnLabel *funcs, int nfuncs, int out_fd) {
+int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
   const uint64_t base = 0x400000;
-  const size_t text_off = 0x1000;
-  const char *interp = "/lib64/ld-linux-x86-64.so.2";
-  const char *needed_lib = "libc.so.6";
-  const size_t phnum = 3; /* PT_LOAD, PT_INTERP, PT_DYNAMIC */
-  const size_t shnum = 9; /* null + 8 named sections */
-  size_t text_size = code->len;
-  size_t interp_len = strlen(interp) + 1;
-  size_t names_len = 1 + 7; /* "" + "_start" */
-  size_t needed_off = 0;
-  size_t dynstr_len;
-  size_t strtab_len;
-  size_t dynsym_count = (size_t)(nfuncs + 2); /* null + _start + funcs */
-  size_t symtab_count = dynsym_count;
-  size_t dynsym_size = dynsym_count * 24;
-  size_t symtab_size = symtab_count * 24;
-  size_t dynamic_count = 6; /* DT_NEEDED,DT_STRTAB,DT_SYMTAB,DT_STRSZ,DT_SYMENT,DT_NULL */
-  size_t dynamic_size = dynamic_count * 16;
-  size_t shstrtab_len = 1 + 6 + 8 + 9 + 8 + 8 + 8 + 10 + 10; /* "",.text,.interp,.dynamic,.dynsym,.dynstr,.symtab,.strtab,.shstrtab */
-  size_t interp_off;
-  size_t dynstr_off;
-  size_t dynsym_off;
-  size_t dynamic_off;
-  size_t symtab_off;
-  size_t strtab_off;
-  size_t shstrtab_off;
-  size_t shoff;
-  size_t file_size;
-  char *dynstr;
-  char *strtab;
-  char *shstrtab;
-  size_t *name_offs;
-  size_t si;
-
-  for (si = 0; si < (size_t)nfuncs; si++) {
-    const char *nm = funcs[si].name ? funcs[si].name : "";
-    names_len += strlen(nm) + 1;
-  }
-  dynstr_len = names_len + strlen(needed_lib) + 1;
-  strtab_len = names_len;
-
-  interp_off = text_off + text_size;
-  dynstr_off = align_up_sz(interp_off + interp_len, 8);
-  dynsym_off = align_up_sz(dynstr_off + dynstr_len, 8);
-  dynamic_off = align_up_sz(dynsym_off + dynsym_size, 8);
-  symtab_off = align_up_sz(dynamic_off + dynamic_size, 8);
-  strtab_off = symtab_off + symtab_size;
-  shstrtab_off = strtab_off + strtab_len;
-  shoff = align_up_sz(shstrtab_off + shstrtab_len, 8);
-  file_size = shoff + shnum * 64;
-
-  dynstr = (char *)calloc(1, dynstr_len);
-  strtab = (char *)calloc(1, strtab_len);
-  shstrtab = (char *)calloc(1, shstrtab_len);
-  name_offs = (size_t *)calloc((size_t)nfuncs, sizeof(size_t));
-  if (!dynstr || !strtab || !shstrtab || !name_offs) {
-    if (dynstr) free(dynstr);
-    if (strtab) free(strtab);
-    if (shstrtab) free(shstrtab);
-    if (name_offs) free(name_offs);
-    return 1;
-  }
-
-  {
-    size_t p = 1;
-    memcpy(dynstr + p, "_start", 7);
-    memcpy(strtab + p, "_start", 7);
-    p += 7;
-    for (si = 0; si < (size_t)nfuncs; si++) {
-      const char *nm = funcs[si].name ? funcs[si].name : "";
-      size_t n = strlen(nm) + 1;
-      name_offs[si] = p;
-      memcpy(dynstr + p, nm, n);
-      memcpy(strtab + p, nm, n);
-      p += n;
-    }
-    needed_off = p;
-    memcpy(dynstr + p, needed_lib, strlen(needed_lib) + 1);
-  }
-
-  {
-    size_t q = 1;
-    memcpy(shstrtab + q, ".text", 6); q += 6;
-    memcpy(shstrtab + q, ".interp", 8); q += 8;
-    memcpy(shstrtab + q, ".dynamic", 9); q += 9;
-    memcpy(shstrtab + q, ".dynsym", 8); q += 8;
-    memcpy(shstrtab + q, ".dynstr", 8); q += 8;
-    memcpy(shstrtab + q, ".symtab", 8); q += 8;
-    memcpy(shstrtab + q, ".strtab", 8); q += 8;
-    memcpy(shstrtab + q, ".shstrtab", 10);
-  }
+  const size_t code_off = 0x1000;
+  size_t file_size = code_off + code->len;
+  size_t off = 0;
+  unsigned char *img;
 
   if (parse_verbose) eprintf("[v] elf: write begin code_len=%d file_size=%d\n", (int)code->len, (int)file_size, 0, 0);
+  img = (unsigned char *)calloc(1, file_size);
+  if (!img) return 1;
+  if (parse_verbose) eprintf("[v] elf: write calloc ok ptr=%ld\n", (long)img, 0, 0, 0);
+
+  img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F';
+  img[4] = 2;   // 64-bit
+  img[5] = 1;   // little endian
+  img[6] = 1;   // version
+  put_u16_le(img + 16, 2);   // ET_EXEC
+  put_u16_le(img + 18, 62);  // x86_64
+  put_u32_le(img + 20, 1);
+  put_u64_le(img + 24, base + code_off + entry_off);
+  put_u64_le(img + 32, 64);  // e_phoff
+  put_u16_le(img + 52, 64);  // e_ehsize
+  put_u16_le(img + 54, 56);  // e_phentsize
+  put_u16_le(img + 56, 1);   // e_phnum
+
+  // Program header starts at offset 64.
+  put_u32_le(img + 64 + 0, 1);                // PT_LOAD
+  put_u32_le(img + 64 + 4, 7);                // PF_R|PF_W|PF_X
+  put_u64_le(img + 64 + 8, 0);                // p_offset
+  put_u64_le(img + 64 + 16, base);            // p_vaddr
+  put_u64_le(img + 64 + 24, base);            // p_paddr
+  put_u64_le(img + 64 + 32, (uint64_t)file_size);
+  put_u64_le(img + 64 + 40, (uint64_t)file_size);
+  put_u64_le(img + 64 + 48, 0x1000);
+
   {
-    unsigned char *img = (unsigned char *)calloc(1, file_size);
-    if (!img) {
-      free(dynstr); free(strtab); free(shstrtab); free(name_offs);
+    size_t ci = 0;
+    while (ci < code->len) {
+      img[code_off + ci] = code->data[ci];
+      ci = ci + 1;
+    }
+  }
+  if (parse_verbose) eprintf("[v] elf: write copy code done\n", 0, 0, 0, 0);
+
+  while (off < file_size) {
+    long n = write(out_fd, img + off, file_size - off);
+    if (n <= 0) {
+      free(img);
       return 1;
     }
-    if (parse_verbose) eprintf("[v] elf: write calloc ok ptr=%ld\n", (long)img, 0, 0, 0);
-
-    img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F';
-    img[4] = 2; img[5] = 1; img[6] = 1;
-    put_u16_le(img + 16, 2);   /* ET_EXEC */
-    put_u16_le(img + 18, 62);  /* x86_64 */
-    put_u32_le(img + 20, 1);
-    put_u64_le(img + 24, base + text_off + entry_off);
-    put_u64_le(img + 32, 64);         /* e_phoff */
-    put_u64_le(img + 40, shoff);      /* e_shoff */
-    put_u16_le(img + 52, 64);         /* e_ehsize */
-    put_u16_le(img + 54, 56);         /* e_phentsize */
-    put_u16_le(img + 56, phnum);      /* e_phnum */
-    put_u16_le(img + 58, 64);         /* e_shentsize */
-    put_u16_le(img + 60, shnum);      /* e_shnum */
-    put_u16_le(img + 62, 8);          /* e_shstrndx */
-
-    /* Program headers */
-    /* PT_LOAD */
-    put_u32_le(img + 64 + 0, 1);
-    put_u32_le(img + 64 + 4, 7);
-    put_u64_le(img + 64 + 8, 0);
-    put_u64_le(img + 64 + 16, base);
-    put_u64_le(img + 64 + 24, base);
-    put_u64_le(img + 64 + 32, (uint64_t)file_size);
-    put_u64_le(img + 64 + 40, (uint64_t)file_size);
-    put_u64_le(img + 64 + 48, 0x1000);
-
-    /* PT_INTERP */
-    put_u32_le(img + 64 + 56 + 0, 3);
-    put_u32_le(img + 64 + 56 + 4, 4);
-    put_u64_le(img + 64 + 56 + 8, interp_off);
-    put_u64_le(img + 64 + 56 + 16, base + interp_off);
-    put_u64_le(img + 64 + 56 + 24, base + interp_off);
-    put_u64_le(img + 64 + 56 + 32, interp_len);
-    put_u64_le(img + 64 + 56 + 40, interp_len);
-    put_u64_le(img + 64 + 56 + 48, 1);
-
-    /* PT_DYNAMIC */
-    put_u32_le(img + 64 + 112 + 0, 2);
-    put_u32_le(img + 64 + 112 + 4, 6);
-    put_u64_le(img + 64 + 112 + 8, dynamic_off);
-    put_u64_le(img + 64 + 112 + 16, base + dynamic_off);
-    put_u64_le(img + 64 + 112 + 24, base + dynamic_off);
-    put_u64_le(img + 64 + 112 + 32, dynamic_size);
-    put_u64_le(img + 64 + 112 + 40, dynamic_size);
-    put_u64_le(img + 64 + 112 + 48, 8);
-
-    /* Copy text */
-    {
-      size_t ci = 0;
-      while (ci < text_size) { img[text_off + ci] = code->data[ci]; ci++; }
-    }
-    /* .interp */
-    memcpy(img + interp_off, interp, interp_len);
-    /* .dynstr/.strtab/.shstrtab */
-    memcpy(img + dynstr_off, dynstr, dynstr_len);
-    memcpy(img + strtab_off, strtab, strtab_len);
-    memcpy(img + shstrtab_off, shstrtab, shstrtab_len);
-
-    /* .dynsym */
-    {
-      size_t o = dynsym_off + 24; /* skip null */
-      put_u32_le(img + o + 0, 1); img[o + 4] = 0x12; img[o + 5] = 0; put_u16_le(img + o + 6, 1);
-      put_u64_le(img + o + 8, base + text_off + entry_off); put_u64_le(img + o + 16, 0); o += 24;
-      for (si = 0; si < (size_t)nfuncs; si++) {
-        size_t lbl = (size_t)funcs[si].label;
-        size_t voff = label_pos ? label_pos[lbl] : 0;
-        put_u32_le(img + o + 0, (uint32_t)name_offs[si]);
-        img[o + 4] = 0x12; img[o + 5] = 0; put_u16_le(img + o + 6, 1);
-        put_u64_le(img + o + 8, base + text_off + voff); put_u64_le(img + o + 16, 0);
-        o += 24;
-      }
-    }
-
-    /* .symtab */
-    {
-      size_t o = symtab_off + 24; /* skip null */
-      put_u32_le(img + o + 0, 1); img[o + 4] = 0x12; img[o + 5] = 0; put_u16_le(img + o + 6, 1);
-      put_u64_le(img + o + 8, base + text_off + entry_off); put_u64_le(img + o + 16, 0); o += 24;
-      for (si = 0; si < (size_t)nfuncs; si++) {
-        size_t lbl = (size_t)funcs[si].label;
-        size_t voff = label_pos ? label_pos[lbl] : 0;
-        put_u32_le(img + o + 0, (uint32_t)name_offs[si]);
-        img[o + 4] = 0x12; img[o + 5] = 0; put_u16_le(img + o + 6, 1);
-        put_u64_le(img + o + 8, base + text_off + voff); put_u64_le(img + o + 16, 0);
-        o += 24;
-      }
-    }
-
-    /* .dynamic entries */
-    {
-      size_t o = dynamic_off;
-      put_u64_le(img + o + 0, 1);  put_u64_le(img + o + 8, needed_off);          o += 16; /* DT_NEEDED */
-      put_u64_le(img + o + 0, 5);  put_u64_le(img + o + 8, base + dynstr_off); o += 16; /* DT_STRTAB */
-      put_u64_le(img + o + 0, 6);  put_u64_le(img + o + 8, base + dynsym_off); o += 16; /* DT_SYMTAB */
-      put_u64_le(img + o + 0, 10); put_u64_le(img + o + 8, dynstr_len);        o += 16; /* DT_STRSZ */
-      put_u64_le(img + o + 0, 11); put_u64_le(img + o + 8, 24);                o += 16; /* DT_SYMENT */
-      put_u64_le(img + o + 0, 0);  put_u64_le(img + o + 8, 0);                          /* DT_NULL */
-    }
-
-    /* Section headers */
-    {
-      size_t sh_text = 1;
-      size_t sh_interp = sh_text + 6;
-      size_t sh_dynamic = sh_interp + 8;
-      size_t sh_dynsym = sh_dynamic + 9;
-      size_t sh_dynstr = sh_dynsym + 8;
-      size_t sh_symtab = sh_dynstr + 8;
-      size_t sh_strtab = sh_symtab + 8;
-      size_t sh_shstrtab = sh_strtab + 8;
-      size_t sh = shoff + 64; /* [1] .text */
-
-      put_u32_le(img + sh + 0, (uint32_t)sh_text); put_u32_le(img + sh + 4, 1); put_u64_le(img + sh + 8, 0x6);
-      put_u64_le(img + sh + 16, base + text_off); put_u64_le(img + sh + 24, text_off); put_u64_le(img + sh + 32, text_size);
-      put_u32_le(img + sh + 40, 0); put_u32_le(img + sh + 44, 0); put_u64_le(img + sh + 48, 16); put_u64_le(img + sh + 56, 0);
-
-      sh += 64; /* [2] .interp */
-      put_u32_le(img + sh + 0, (uint32_t)sh_interp); put_u32_le(img + sh + 4, 1); put_u64_le(img + sh + 8, 0x2);
-      put_u64_le(img + sh + 16, base + interp_off); put_u64_le(img + sh + 24, interp_off); put_u64_le(img + sh + 32, interp_len);
-      put_u32_le(img + sh + 40, 0); put_u32_le(img + sh + 44, 0); put_u64_le(img + sh + 48, 1); put_u64_le(img + sh + 56, 0);
-
-      sh += 64; /* [3] .dynamic */
-      put_u32_le(img + sh + 0, (uint32_t)sh_dynamic); put_u32_le(img + sh + 4, 6); put_u64_le(img + sh + 8, 0x3);
-      put_u64_le(img + sh + 16, base + dynamic_off); put_u64_le(img + sh + 24, dynamic_off); put_u64_le(img + sh + 32, dynamic_size);
-      put_u32_le(img + sh + 40, 5); put_u32_le(img + sh + 44, 0); put_u64_le(img + sh + 48, 8); put_u64_le(img + sh + 56, 16);
-
-      sh += 64; /* [4] .dynsym */
-      put_u32_le(img + sh + 0, (uint32_t)sh_dynsym); put_u32_le(img + sh + 4, 11); put_u64_le(img + sh + 8, 0x2);
-      put_u64_le(img + sh + 16, base + dynsym_off); put_u64_le(img + sh + 24, dynsym_off); put_u64_le(img + sh + 32, dynsym_size);
-      put_u32_le(img + sh + 40, 5); put_u32_le(img + sh + 44, 1); put_u64_le(img + sh + 48, 8); put_u64_le(img + sh + 56, 24);
-
-      sh += 64; /* [5] .dynstr */
-      put_u32_le(img + sh + 0, (uint32_t)sh_dynstr); put_u32_le(img + sh + 4, 3); put_u64_le(img + sh + 8, 0x2);
-      put_u64_le(img + sh + 16, base + dynstr_off); put_u64_le(img + sh + 24, dynstr_off); put_u64_le(img + sh + 32, dynstr_len);
-      put_u32_le(img + sh + 40, 0); put_u32_le(img + sh + 44, 0); put_u64_le(img + sh + 48, 1); put_u64_le(img + sh + 56, 0);
-
-      sh += 64; /* [6] .symtab */
-      put_u32_le(img + sh + 0, (uint32_t)sh_symtab); put_u32_le(img + sh + 4, 2); put_u64_le(img + sh + 8, 0);
-      put_u64_le(img + sh + 16, 0); put_u64_le(img + sh + 24, symtab_off); put_u64_le(img + sh + 32, symtab_size);
-      put_u32_le(img + sh + 40, 7); put_u32_le(img + sh + 44, 1); put_u64_le(img + sh + 48, 8); put_u64_le(img + sh + 56, 24);
-
-      sh += 64; /* [7] .strtab */
-      put_u32_le(img + sh + 0, (uint32_t)sh_strtab); put_u32_le(img + sh + 4, 3); put_u64_le(img + sh + 8, 0);
-      put_u64_le(img + sh + 16, 0); put_u64_le(img + sh + 24, strtab_off); put_u64_le(img + sh + 32, strtab_len);
-      put_u32_le(img + sh + 40, 0); put_u32_le(img + sh + 44, 0); put_u64_le(img + sh + 48, 1); put_u64_le(img + sh + 56, 0);
-
-      sh += 64; /* [8] .shstrtab */
-      put_u32_le(img + sh + 0, (uint32_t)sh_shstrtab); put_u32_le(img + sh + 4, 3); put_u64_le(img + sh + 8, 0);
-      put_u64_le(img + sh + 16, 0); put_u64_le(img + sh + 24, shstrtab_off); put_u64_le(img + sh + 32, shstrtab_len);
-      put_u32_le(img + sh + 40, 0); put_u32_le(img + sh + 44, 0); put_u64_le(img + sh + 48, 1); put_u64_le(img + sh + 56, 0);
-    }
-
-    if (parse_verbose) eprintf("[v] elf: write copy code done\n", 0, 0, 0, 0);
-    {
-      size_t off = 0;
-      while (off < file_size) {
-        long n = write(out_fd, img + off, file_size - off);
-        if (n <= 0) {
-          free(img); free(dynstr); free(strtab); free(shstrtab); free(name_offs);
-          return 1;
-        }
-        off += (size_t)n;
-      }
-      if (parse_verbose) eprintf("[v] elf: write bytes done off=%d\n", (int)off, 0, 0, 0);
-    }
-
-    free(img);
+    off += (size_t)n;
   }
-
-  free(dynstr);
-  free(strtab);
-  free(shstrtab);
-  free(name_offs);
+  if (parse_verbose) eprintf("[v] elf: write bytes done off=%d\n", (int)off, 0, 0, 0);
+  free(img);
   return 0;
 }
 
@@ -1602,7 +1382,7 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   }
   if (parse_verbose) eprintf("[v] elf: fixups patched n=%d\n", c.nfixups, 0, 0, 0);
 
-  int rc = write_elf_exec_fd(&c.code, c.label_pos[start_lbl], c.label_pos, c.funcs, c.nfuncs, out_fd);
+  int rc = write_elf_exec_fd(&c.code, c.label_pos[start_lbl], out_fd);
   if (parse_verbose) eprintf("[v] elf: write_elf rc=%d code_len=%d\n", rc, c.code.len, 0, 0);
   free(c.code.data);
   free(c.label_pos);

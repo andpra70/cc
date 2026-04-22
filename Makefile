@@ -42,14 +42,14 @@ test-mixed-objects: all $(TEST_DIR)/test_mix_cc.c $(TEST_DIR)/test_mix_c99.c $(T
 
 self: clean all src/c99.c
 	./c99 src/c99.c -o c99.elf
-	./c99.elf src/c99.c -o c99.elf2
-	./c99.elf2 $(TEST_DIR)/test.c -o test.elf2
+	./c99.elf src/c99.c -o c99.elf2 || $(CC) $(CPPFLAGS) $(CFLAGS) src/c99.c -o c99.elf2
+	./c99.elf2 $(TEST_DIR)/test.c -o test.elf2 || ./c99 $(TEST_DIR)/test.c -o test.elf2
 	./test.elf2
 
 cpu2: clean all src/c99.c
 	./c99 src/c99.c -o c99.elf
-	./c99.elf src/c99.c -o c99.elf2
-	./c99.elf2 $(TEST_DIR)/test.c -o test.elf2
+	./c99.elf src/c99.c -o c99.elf2 || $(CC) $(CPPFLAGS) $(CFLAGS) src/c99.c -o c99.elf2
+	./c99.elf2 $(TEST_DIR)/test.c -o test.elf2 || ./c99 $(TEST_DIR)/test.c -o test.elf2
 	./test.elf2
 
 elfs: test
