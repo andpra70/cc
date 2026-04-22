@@ -9,13 +9,13 @@ TEST_DIR ?= src/test
 c99: src/c99.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_llvm.c src/minilib.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/c99.c -o c99
 
-cpu: src/cpu.c src/minilib.c
+cpu: src/cpu.c 
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/cpu.c -o cpu -lm
 
 all: c99 cpu
 
 clean:
-	rm -f *.elf2 *.elf *.llvm c99 cpu compiler test_profile.host tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
+	rm -f *.elf2 *.elf *.llvm c99 cpu dyn c992 c993 minilib.o compiler test_profile.host tmp/cc-self1 tmp/cc-self2 tmp/cc-self3 tmp/smoke.out
 
 test: clean all $(TEST_DIR)/test.c test-mixed-objects test-profile
 	./c99 $(TEST_DIR)/test.c -v -a -o test.llvm
@@ -44,17 +44,17 @@ test-profile: $(TEST_DIR)/test_profile.c lib/minilib.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(TEST_DIR)/test_profile.c lib/minilib.c -o test_profile.host -ldl -lm
 	./test_profile.host
 
-self: clean all src/c99.c
+self: clean all src/c99.c 
 	./c99 src/c99.c -o c99.elf
 	./c99.elf src/c99.c -o c99.elf2
 	./c99.elf2 $(TEST_DIR)/test.c -o test.elf2
 	./test.elf2
 
-cpu2: clean all src/c99.c
-	./c99 src/c99.c -o c99.elf
-	./c99.elf src/c99.c -o c99.elf2
-	./c99.elf2 $(TEST_DIR)/test.c -o test.elf2
+cpu2: clean all $(TEST_DIR)/test.c 
+	./c99 $(TEST_DIR)/test.c -o test.elf2
+	./c99 $(TEST_DIR)/test.c -a -o test.llvm
 	./test.elf2
+	./cpu test.llvm
 
 elfs: test
 	readelf -d test.elf | grep NEEDED
