@@ -10,6 +10,10 @@
 #define MODE_LLVM 2
 #define MODE_INTERP 3
 
+#define ELF_OUT_EXEC 0
+#define ELF_OUT_OBJ 1
+#define ELF_OUT_AR 2
+
 char *read_file_source(const char *path) {
   int fd = open(path, O_RDONLY, 0);
   size_t cap = CC_CFG_IO_BUFFER_INIT;
@@ -130,8 +134,21 @@ int redirect_stdout_to_path(const char *path) {
   return 0;
 }
 
+int str_has_suffix(const char *s, const char *suffix) {
+  size_t n = strlen(s);
+  size_t m = strlen(suffix);
+  size_t i = 0;
+  if (n < m) return 0;
+  while (i < m) {
+    if (s[n - m + i] != suffix[i]) return 0;
+    i++;
+  }
+  return 1;
+}
+
 int compiler_entry(int argc, char **argv, int argi) {
   int mode = MODE_ELF;
+  int elf_out_kind = ELF_OUT_EXEC;
   int verbose = 0;
   char *input_path = NULL;
   char *output_path = NULL;
@@ -143,6 +160,14 @@ int compiler_entry(int argc, char **argv, int argi) {
   for (i = argi; i < argc; i++) {
     if (!strcmp(argv[i], "-s")) {
       mode = MODE_ASM;
+      continue;
+    }
+    if (!strcmp(argv[i], "-c")) {
+      elf_out_kind = ELF_OUT_OBJ;
+      continue;
+    }
+    if (!strcmp(argv[i], "-ar")) {
+      elf_out_kind = ELF_OUT_AR;
       continue;
     }
     if (!strcmp(argv[i], "-a")) {
@@ -187,16 +212,19 @@ int compiler_entry(int argc, char **argv, int argi) {
   }
 
   if (!input_path) {
-    eprintf("Usage: %s [-s|-a|-i] [-v] [-l out_dir] [-o out_file] input.c\n", (long)argv[0], 0, 0, 0);
+    eprintf("Usage: %s [-s|-a|-i|-c|-ar] [-v] [-l out_dir] [-o out_file] input.c\n", (long)argv[0], 0, 0, 0);
     return 1;
+  }
+  if (mode != MODE_ELF) elf_out_kind = ELF_OUT_EXEC;
+  if (mode == MODE_ELF && output_file) {
+    if (str_has_suffix(output_file, ".o")) elf_out_kind = ELF_OUT_OBJ;
+    else if (str_has_suffix(output_file, ".a")) elf_out_kind = ELF_OUT_AR;
   }
   parse_verbose = verbose;
   if (verbose) {
-    char *vf = "(auto)";
-    char *vd = "(cwd)";
-    if (output_file) vf = output_file;
-    if (output_dir) vd = output_dir;
-    eprintf("[v] mode=%d input=%s out_file=%s out_dir=%s\n", mode, (long)input_path, (long)vf, (long)vd);
+    eprintf("[v] mode=%d elf_out=%d input=%s out_file=%s\n", mode, elf_out_kind, (long)input_path,
+            (long)(output_file ? output_file : "(auto)"));
+    eprintf("[v] out_dir=%s\n", (long)(output_dir ? output_dir : "(cwd)"), 0, 0, 0);
   }
 
   source = read_file_source(input_path);
@@ -215,10 +243,14 @@ int compiler_entry(int argc, char **argv, int argi) {
     if (output_dir) {
       if (mode == MODE_ASM) output_file = derive_output_name(input_path, ".asm");
       else if (mode == MODE_LLVM) output_file = derive_output_name(input_path, ".llvm");
+      else if (elf_out_kind == ELF_OUT_OBJ) output_file = derive_output_name(input_path, ".o");
+      else if (elf_out_kind == ELF_OUT_AR) output_file = derive_output_name(input_path, ".a");
       else output_file = derive_output_name(input_path, ".elf");
     } else {
       if (mode == MODE_ASM) output_path = derive_output_path(input_path, ".asm");
       else if (mode == MODE_LLVM) output_path = derive_output_path(input_path, ".llvm");
+      else if (elf_out_kind == ELF_OUT_OBJ) output_path = derive_output_path(input_path, ".o");
+      else if (elf_out_kind == ELF_OUT_AR) output_path = derive_output_path(input_path, ".a");
       else output_path = derive_output_path(input_path, ".elf");
     }
   }
@@ -251,7 +283,24 @@ int compiler_entry(int argc, char **argv, int argi) {
     return emit_ast_from_source(source);
   }
 
-  if (verbose) eprintf("[v] emit elf -> %s\n", (long)output_path, 0, 0, 0);
+  if (elf_out_kind == ELF_OUT_OBJ) {
+    if (verbose) eprintf("[v] emit elf relocatable object -> %s\n", (long)output_path, 0, 0, 0);
+    return compile_to_object_source_path(source, output_path);
+  }
+  if (elf_out_kind == ELF_OUT_AR) {
+    char *member_name = derive_output_name(input_path, ".o");
+    int rc;
+    if (!member_name) {
+      eprintf("Error: out of memory creating archive member name\n", 0, 0, 0, 0);
+      return 1;
+    }
+    if (verbose) eprintf("[v] emit posix archive -> %s (member=%s)\n", (long)output_path, (long)member_name, 0, 0);
+    rc = compile_to_archive_source_path(source, output_path, member_name);
+    free(member_name);
+    return rc;
+  }
+
+  if (verbose) eprintf("[v] emit elf exec -> %s\n", (long)output_path, 0, 0, 0);
   return compile_to_elf_source_path(source, output_path);
 }
 

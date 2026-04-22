@@ -956,6 +956,271 @@ static size_t align_up_sz(size_t v, size_t a) {
   return (v + (a - 1)) & ~(a - 1);
 }
 
+size_t align_up_size(size_t x, size_t a) {
+  if (a == 0) return x;
+  return (x + a - 1) & ~(a - 1);
+}
+
+void put_sym64(unsigned char *p, uint32_t st_name, unsigned char st_info, unsigned char st_other,
+               uint16_t st_shndx, uint64_t st_value, uint64_t st_size) {
+  put_u32_le(p + 0, st_name);
+  p[4] = st_info;
+  p[5] = st_other;
+  put_u16_le(p + 6, st_shndx);
+  put_u64_le(p + 8, st_value);
+  put_u64_le(p + 16, st_size);
+}
+
+void copy_cstr(unsigned char *dst, size_t *off, const char *s) {
+  while (*s) dst[(*off)++] = (unsigned char)*s++;
+  dst[(*off)++] = 0;
+}
+
+int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
+  static const char shstrtab[] = "\0.text\0.shstrtab\0.strtab\0.symtab\0";
+  const uint32_t sh_name_text = 1;
+  const uint32_t sh_name_shstrtab = 7;
+  const uint32_t sh_name_strtab = 17;
+  const uint32_t sh_name_symtab = 25;
+  const size_t shstrtab_size = sizeof(shstrtab);
+  const size_t ehdr_size = 64;
+  const size_t shent_size = 64;
+  const int shnum = 5;
+  int nsyms = 2 + c->nfuncs;
+  size_t symtab_size = (size_t)nsyms * 24;
+  size_t strtab_size = 1;
+  size_t text_off = ehdr_size;
+  size_t shstr_off;
+  size_t strtab_off;
+  size_t symtab_off;
+  size_t shoff;
+  size_t file_size;
+  unsigned char *img;
+  size_t off;
+  int *name_offs;
+  int i;
+
+  if (c->nfuncs < 0) return 1;
+  for (i = 0; i < c->nfuncs; i++) {
+    const char *name = c->funcs[i].name ? c->funcs[i].name : "";
+    strtab_size += strlen(name) + 1;
+  }
+
+  shstr_off = align_up_size(text_off + c->code.len, 1);
+  strtab_off = align_up_size(shstr_off + shstrtab_size, 1);
+  symtab_off = align_up_size(strtab_off + strtab_size, 8);
+  shoff = align_up_size(symtab_off + symtab_size, 8);
+  file_size = shoff + (size_t)shnum * shent_size;
+
+  img = calloc(1, file_size);
+  if (!img) return 1;
+  name_offs = malloc(sizeof(int) * (c->nfuncs > 0 ? c->nfuncs : 1));
+  if (!name_offs) {
+    free(img);
+    return 1;
+  }
+
+  img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F';
+  img[4] = 2;
+  img[5] = 1;
+  img[6] = 1;
+  put_u16_le(img + 16, 1);   // ET_REL
+  put_u16_le(img + 18, 62);  // x86_64
+  put_u32_le(img + 20, 1);
+  put_u64_le(img + 40, (uint64_t)shoff);
+  put_u16_le(img + 52, (uint16_t)ehdr_size);
+  put_u16_le(img + 54, 0);
+  put_u16_le(img + 56, 0);
+  put_u16_le(img + 58, (uint16_t)shent_size);
+  put_u16_le(img + 60, (uint16_t)shnum);
+  put_u16_le(img + 62, 2);   // .shstrtab index
+
+  if (c->code.len > 0) memcpy(img + text_off, c->code.data, c->code.len);
+  memcpy(img + shstr_off, shstrtab, shstrtab_size);
+
+  {
+    size_t st_off = strtab_off;
+    img[st_off++] = 0;
+    for (i = 0; i < c->nfuncs; i++) {
+      const char *name = c->funcs[i].name ? c->funcs[i].name : "";
+      name_offs[i] = (int)(st_off - strtab_off);
+      copy_cstr(img, &st_off, name);
+    }
+  }
+
+  {
+    unsigned char *sym = img + symtab_off;
+    size_t sy = 0;
+    put_sym64(sym + sy, 0, 0, 0, 0, 0, 0);
+    sy += 24;
+    put_sym64(sym + sy, 0, 0x03, 0, 1, 0, 0); // STB_LOCAL|STT_SECTION, .text
+    sy += 24;
+    for (i = 0; i < c->nfuncs; i++) {
+      uint64_t sval = 0;
+      if (c->funcs[i].label < 0 || c->funcs[i].label >= c->nlabels || !c->label_set[c->funcs[i].label]) {
+        free(name_offs);
+        free(img);
+        return 1;
+      }
+      sval = (uint64_t)c->label_pos[c->funcs[i].label];
+      put_sym64(sym + sy, (uint32_t)name_offs[i], 0x12, 0, 1, sval, 0); // STB_GLOBAL|STT_FUNC
+      sy += 24;
+    }
+  }
+
+  {
+    unsigned char *sh = img + shoff;
+    memset(sh, 0, (size_t)shnum * shent_size);
+
+    // .text
+    put_u32_le(sh + shent_size * 1 + 0, sh_name_text);
+    put_u32_le(sh + shent_size * 1 + 4, 1);
+    put_u64_le(sh + shent_size * 1 + 8, 7);
+    put_u64_le(sh + shent_size * 1 + 24, (uint64_t)text_off);
+    put_u64_le(sh + shent_size * 1 + 32, (uint64_t)c->code.len);
+    put_u64_le(sh + shent_size * 1 + 48, 16);
+
+    // .shstrtab
+    put_u32_le(sh + shent_size * 2 + 0, sh_name_shstrtab);
+    put_u32_le(sh + shent_size * 2 + 4, 3);
+    put_u64_le(sh + shent_size * 2 + 24, (uint64_t)shstr_off);
+    put_u64_le(sh + shent_size * 2 + 32, (uint64_t)shstrtab_size);
+    put_u64_le(sh + shent_size * 2 + 48, 1);
+
+    // .strtab
+    put_u32_le(sh + shent_size * 3 + 0, sh_name_strtab);
+    put_u32_le(sh + shent_size * 3 + 4, 3);
+    put_u64_le(sh + shent_size * 3 + 24, (uint64_t)strtab_off);
+    put_u64_le(sh + shent_size * 3 + 32, (uint64_t)strtab_size);
+    put_u64_le(sh + shent_size * 3 + 48, 1);
+
+    // .symtab
+    put_u32_le(sh + shent_size * 4 + 0, sh_name_symtab);
+    put_u32_le(sh + shent_size * 4 + 4, 2);
+    put_u64_le(sh + shent_size * 4 + 24, (uint64_t)symtab_off);
+    put_u64_le(sh + shent_size * 4 + 32, (uint64_t)symtab_size);
+    put_u32_le(sh + shent_size * 4 + 40, 3);
+    put_u32_le(sh + shent_size * 4 + 44, 2);
+    put_u64_le(sh + shent_size * 4 + 48, 8);
+    put_u64_le(sh + shent_size * 4 + 56, 24);
+  }
+
+  off = 0;
+  while (off < file_size) {
+    long n = write(out_fd, img + off, file_size - off);
+    if (n <= 0) {
+      free(name_offs);
+      free(img);
+      return 1;
+    }
+    off += (size_t)n;
+  }
+
+  free(name_offs);
+  free(img);
+  return 0;
+}
+
+int write_ar_single_member_fd(int out_fd, const char *member_name, const unsigned char *data, size_t size) {
+  size_t off = 0;
+  size_t nlen = strlen(member_name);
+  size_t d_off = 0;
+  unsigned char magic[8];
+  int i;
+
+  magic[0] = '!';
+  magic[1] = '<';
+  magic[2] = 'a';
+  magic[3] = 'r';
+  magic[4] = 'c';
+  magic[5] = 'h';
+  magic[6] = '>';
+  magic[7] = 10;
+  while (off < 8) {
+    long n = write(out_fd, magic + off, 8 - off);
+    if (n <= 0) return 1;
+    off += (size_t)n;
+  }
+
+  if (nlen > 15) nlen = 15;
+  for (i = 0; i < (int)nlen; i++) {
+    char ch = member_name[i];
+    if (write(out_fd, &ch, 1) != 1) return 1;
+  }
+  {
+    char slash = '/';
+    if (write(out_fd, &slash, 1) != 1) return 1;
+  }
+  for (i = (int)nlen + 1; i < 16; i++) {
+    char sp = ' ';
+    if (write(out_fd, &sp, 1) != 1) return 1;
+  }
+
+  // mtime (12), uid (6), gid (6): "0" + spaces
+  {
+    char z = '0';
+    if (write(out_fd, &z, 1) != 1) return 1;
+  }
+  for (i = 1; i < 12; i++) { char sp = ' '; if (write(out_fd, &sp, 1) != 1) return 1; }
+  {
+    char z = '0';
+    if (write(out_fd, &z, 1) != 1) return 1;
+  }
+  for (i = 1; i < 6; i++) { char sp = ' '; if (write(out_fd, &sp, 1) != 1) return 1; }
+  {
+    char z = '0';
+    if (write(out_fd, &z, 1) != 1) return 1;
+  }
+  for (i = 1; i < 6; i++) { char sp = ' '; if (write(out_fd, &sp, 1) != 1) return 1; }
+
+  // mode (8): "100644" + spaces
+  {
+    const char *mode = "100644";
+    for (i = 0; i < 6; i++) if (write(out_fd, mode + i, 1) != 1) return 1;
+  }
+  for (i = 6; i < 8; i++) { char sp = ' '; if (write(out_fd, &sp, 1) != 1) return 1; }
+
+  // size (10): decimal left-justified + spaces
+  {
+    char dec[32];
+    int nd = 0;
+    size_t t = size;
+    if (t == 0) dec[nd++] = '0';
+    else {
+      char rev[32];
+      int nr = 0;
+      while (t > 0 && nr < 32) {
+        size_t q = t / 10;
+        size_t rem = t - q * 10;
+        rev[nr++] = (char)('0' + rem);
+        t = q;
+      }
+      while (nr > 0) dec[nd++] = rev[--nr];
+    }
+    if (nd > 10) nd = 10;
+    for (i = 0; i < nd; i++) if (write(out_fd, dec + i, 1) != 1) return 1;
+    for (i = nd; i < 10; i++) { char sp = ' '; if (write(out_fd, &sp, 1) != 1) return 1; }
+  }
+
+  {
+    char end1 = '`';
+    char end2 = 10;
+    if (write(out_fd, &end1, 1) != 1) return 1;
+    if (write(out_fd, &end2, 1) != 1) return 1;
+  }
+
+  while (d_off < size) {
+    long n = write(out_fd, data + d_off, size - d_off);
+    if (n <= 0) return 1;
+    d_off += (size_t)n;
+  }
+  if (size & 1) {
+    char pad = 10;
+    if (write(out_fd, &pad, 1) != 1) return 1;
+  }
+  return 0;
+}
+
 int write_elf_exec_fd(BinBuf *code, size_t entry_off, size_t *label_pos, FnLabel *funcs, int nfuncs, int out_fd) {
   const uint64_t base = 0x400000;
   const size_t text_off = 0x1000;
@@ -1372,4 +1637,195 @@ int compile_to_elf_source_path(char *source, const char *out_path) {
   rc = compile_to_elf_source_fd(source, fd);
   close(fd);
   return rc;
+}
+
+int compile_to_object_source_fd(char *source, int out_fd) {
+  reset_string_literals();
+  if (parse_verbose) eprintf("[v] elf: start compile_to_object_source_fd\n", 0, 0, 0, 0);
+
+  Node *funcs = parse_program_functions(source);
+  int nfunc = 0;
+  for (Node *f = funcs; f; f = f->next) {
+    if (f->kind == ND_FUNC && f->name && f->body) nfunc++;
+  }
+  if (nfunc == 0) {
+    free(source);
+    reset_string_literals();
+    eprintf("Error: no functions compiled from source\n", 0, 0, 0, 0);
+    return 1;
+  }
+
+  ElfCtx c = {0};
+  int break_labels_buf[CC_CFG_ELF_LOOP_NEST_MAX];
+  int continue_labels_buf[CC_CFG_ELF_LOOP_NEST_MAX];
+  StrLit str_lits_buf[CC_CFG_ELF_STR_LIT_MAX];
+  c.code.data = NULL;
+  c.code.len = 0;
+  c.code.cap = 0;
+  c.label_pos = NULL;
+  c.label_set = NULL;
+  c.nlabels = 0;
+  c.caplabels = 0;
+  c.fixups = NULL;
+  c.nfixups = 0;
+  c.capfixups = 0;
+  c.funcs = NULL;
+  c.nfuncs = 0;
+  c.break_top = 0;
+  c.break_labels = break_labels_buf;
+  c.continue_top = 0;
+  c.continue_labels = continue_labels_buf;
+  c.ret_label = 0;
+  c.globals_label = 0;
+  c.str_lits = str_lits_buf;
+  c.n_str_lits = 0;
+  {
+    size_t funcs_bytes = (size_t)nfunc * CC_CFG_ELF_FUNC_SLOT_BYTES;
+    c.funcs = (FnLabel *)malloc(funcs_bytes);
+    if (c.funcs) memset(c.funcs, 0, funcs_bytes);
+  }
+  if (!c.funcs) {
+    eprintf("Error: out of memory allocating function labels\n", 0, 0, 0, 0);
+    free(source);
+    reset_string_literals();
+    return 1;
+  }
+  c.nfuncs = nfunc;
+  c.globals_label = ctx_new_label(&c);
+
+  {
+    int idx = 0;
+    for (Node *f = funcs; f; f = f->next) {
+      if (f->kind == ND_FUNC && f->name && f->body) {
+        c.funcs[idx].name = f->name;
+        c.funcs[idx].fn = f;
+        c.funcs[idx].label = ctx_new_label(&c);
+        idx++;
+      }
+    }
+  }
+
+  {
+    int i = 0;
+    while (i < c.nfuncs) {
+      emit_function_elf(&c, &c.funcs[i]);
+      i++;
+    }
+  }
+  emit_string_literals(&c);
+  ctx_place_label(&c, c.globals_label);
+  {
+    int i = 0;
+    int gs = global_storage_size();
+    while (i < gs) {
+      bb_emit1(&c.code, 0);
+      i++;
+    }
+  }
+
+  if (patch_fixups(&c) != 0) {
+    eprintf("Error: unresolved labels in codegen\n", 0, 0, 0, 0);
+    free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(source);
+    reset_string_literals();
+    return 1;
+  }
+
+  {
+    int rc = write_elf_rel_obj_fd(&c, out_fd);
+    free(c.code.data);
+    free(c.label_pos);
+    free(c.label_set);
+    free(c.fixups);
+    free(c.funcs);
+    free(source);
+    reset_string_literals();
+    if (rc != 0) {
+      eprintf("Error: cannot write ELF object output\n", 0, 0, 0, 0);
+      return 1;
+    }
+    return 0;
+  }
+}
+
+int compile_to_object_source_path(char *source, const char *out_path) {
+  int fd = open(out_path, O_WRONLY + O_CREAT + O_TRUNC, 493);
+  int rc;
+  if (fd < 0) {
+    eprintf("Error: cannot open output file: %s\n", (long)out_path, 0, 0, 0);
+    return 1;
+  }
+  rc = compile_to_object_source_fd(source, fd);
+  close(fd);
+  return rc;
+}
+
+int read_binary_file(const char *path, unsigned char **out_buf, size_t *out_len) {
+  int fd = open(path, O_RDONLY, 0);
+  size_t cap = CC_CFG_IO_BUFFER_INIT;
+  size_t len = 0;
+  unsigned char *buf;
+  if (fd < 0) return 1;
+
+  buf = malloc(cap);
+  if (!buf) {
+    close(fd);
+    return 1;
+  }
+
+  while (1) {
+    long n;
+    if (len == cap) {
+      unsigned char *nb;
+      cap *= 2;
+      nb = realloc(buf, cap);
+      if (!nb) {
+        free(buf);
+        close(fd);
+        return 1;
+      }
+      buf = nb;
+    }
+    n = read(fd, buf + len, cap - len);
+    if (n < 0) {
+      free(buf);
+      close(fd);
+      return 1;
+    }
+    if (n == 0) break;
+    len += (size_t)n;
+  }
+
+  close(fd);
+  *out_buf = buf;
+  *out_len = len;
+  return 0;
+}
+
+int compile_to_archive_source_path(char *source, const char *out_path, const char *member_name) {
+  const char *tmp_obj_path = "/tmp/cc-posix-archive-member.o";
+  unsigned char *obj_data = NULL;
+  size_t obj_size = 0;
+  int out_fd;
+
+  if (compile_to_object_source_path(source, tmp_obj_path) != 0) return 1;
+  if (read_binary_file(tmp_obj_path, &obj_data, &obj_size) != 0) {
+    eprintf("Error: cannot read temporary object for archive\n", 0, 0, 0, 0);
+    return 1;
+  }
+
+  out_fd = open(out_path, O_WRONLY + O_CREAT + O_TRUNC, 493);
+  if (out_fd < 0) {
+    free(obj_data);
+    eprintf("Error: cannot open output file: %s\n", (long)out_path, 0, 0, 0);
+    return 1;
+  }
+  if (write_ar_single_member_fd(out_fd, member_name, obj_data, obj_size) != 0) {
+    close(out_fd);
+    free(obj_data);
+    eprintf("Error: cannot write POSIX archive output\n", 0, 0, 0, 0);
+    return 1;
+  }
+  close(out_fd);
+  free(obj_data);
+  return 0;
 }

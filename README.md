@@ -1,16 +1,16 @@
-# cc - Tiny C Compiler Self-Hosted
+# c99 - Tiny C Compiler Self-Hosted
 
 Progetto sperimentale di compilatore C minimale con backend multipli (ELF, ASM, AST/LLVM-like, interprete) e pipeline di self-hosting.
 
 Obiettivo pratico:
 - compilare sorgenti C semplici,
 - generare un ELF eseguibile direttamente,
-- eseguire catena di bootstrap `cc -> cc.elf -> cc.elf2` in modo stabile.
+- eseguire catena di bootstrap `c99 -> c99.elf -> c99.elf2` in modo stabile.
 
 ## Struttura repository
 
 - `src/`
-- `src/cc.c`: driver CLI del compilatore.
+- `src/c99.c`: driver CLI del compilatore.
 - `src/ast.c`: lexer, parser, simboli/tipi, AST.
 - `src/g_elf.c`: codegen ELF x86_64.
 - `src/g_asm.c`: emissione assembly testuale.
@@ -33,7 +33,7 @@ Prerequisiti host minimi:
 Comandi:
 
 ```bash
-make cc
+make c99
 make cpu
 make all
 ```
@@ -64,7 +64,7 @@ I parametri principali sono in:
 
 - `src/config.h`
 
-Modifica i `#define` iniziali e ricompila (`make clean && make cc`).
+Modifica i `#define` iniziali e ricompila (`make clean && make c99`).
 
 Parametri disponibili:
 - `CC_CFG_IO_BUFFER_INIT`: dimensione iniziale buffer lettura file/stdin.
@@ -88,7 +88,7 @@ Indicazioni pratiche:
 Sintassi:
 
 ```bash
-./cc [opzioni] input.c
+./c99 [opzioni] input.c
 ```
 
 Opzioni:
@@ -97,30 +97,40 @@ Opzioni:
 - `-s`: emette `.asm`.
 - `-a`: emette `.llvm` (AST-like textual IR del progetto).
 - `-i`: esecuzione via interprete AST.
+- `-c`: emette oggetto ELF relocatable (`.o`) compatibile POSIX.
+- `-ar`: emette archivio statico POSIX (`.a`) con un membro `.o`.
 - `-v`: log verbose parsing/codegen.
 
-Default senza `-s/-a/-i`: output ELF eseguibile (`.elf`).
+Default senza `-s/-a/-i/-c/-ar`: output ELF eseguibile (`.elf`).
+
+Nota: in modalità ELF, l’estensione passata con `-o` seleziona automaticamente il formato:
+- `*.o` -> oggetto relocatable,
+- `*.a` -> archivio POSIX,
+- altro -> ELF eseguibile.
 
 Esempi:
 
 ```bash
-./cc src/test.c -o test.elf
+./c99 src/test/test.c -o test.elf
 ./test.elf
 
-./cc src/test.c -a -o test.llvm
+./c99 src/test/test.c -a -o test.llvm
 ./cpu test.llvm
 
-./cc src/test.c -s -o test.asm
+./c99 src/test/test.c -s -o test.asm
+
+./c99 src/test/test.c -c -o test.o
+./c99 src/test/test.c -ar -o libtest.a
 ```
 
 ## Self-hosting
 
 Flusso atteso:
 
-1. build host del primo compilatore (`cc`),
-2. compilazione di `src/cc.c` in `cc.elf`,
-3. compilazione di `src/cc.c` con `cc.elf` in `cc.elf2`,
-4. uso di `cc.elf2` per compilare ed eseguire test.
+1. build host del primo compilatore (`c99`),
+2. compilazione di `src/c99.c` in `c99.elf`,
+3. compilazione di `src/c99.c` con `c99.elf` in `c99.elf2`,
+4. uso di `c99.elf2` per compilare ed eseguire test.
 
 Target dedicato:
 
@@ -139,10 +149,22 @@ make test
 Esegue:
 - test percorso `.llvm` con `cpu`,
 - test percorso `.elf` nativo,
-- validazione funzionale su `src/test.c` (math, logic, if/while/for/switch, memory, pointer, struct/union, calls, recursion, bit ops, ecc.).
+- validazione funzionale su `src/test/test.c` (math, logic, if/while/for/switch, memory, pointer, struct/union, calls, recursion, bit ops, ecc.).
 
 Output atteso finale:
 - `total_fail:0`
+
+Test dedicato per moduli misti `.o/.a` tra compilatori:
+
+```bash
+make test-mixed-objects
+```
+
+Il target verifica:
+- emissione `.o` e `.a` con `./c99`,
+- compilazione moduli con `c99` e `gcc`,
+- link misto (`./c99` object + `c99/gcc` object) con linker `gcc` e linker `c99`,
+- link da archivio `.a` prodotto da `./c99` (con indicizzazione `ranlib`).
 
 ## Architettura (sintesi)
 
