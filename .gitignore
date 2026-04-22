@@ -2,6 +2,7 @@ tmp/
 .codex
 .idea/
 .vscode/
+js/
 *.log
 *.tmp
 *.bak

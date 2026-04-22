@@ -64,7 +64,8 @@ dyn: clean all src/dyn.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/dyn.c -o dyn
 	./dyn
 	./c99 src/dyn.c -o dyn.elf
-
+	./dyn.elf
+	
 push:
 	git add .
 	git commit -m "update"
