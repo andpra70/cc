@@ -232,6 +232,7 @@ void gen(Node *node) {
     case ND_OR: printf("  or rax, rdi\n  setne al\n  movzx rax, al\n"); break;
     case ND_BITAND: printf("  and rax, rdi\n"); break;
     case ND_BITOR: printf("  or rax, rdi\n"); break;
+    case ND_BITXOR: printf("  xor rax, rdi\n"); break;
   }
   printf("  push rax\n");
 }

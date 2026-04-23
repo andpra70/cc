@@ -1,0 +1,56 @@
+#! /bin/sh
+
+set -e
+set -u
+
+if ! test "x86_64" = "$(uname -m)"
+then
+    echo "incorrect host for test" 1>&2
+    exit 1
+fi
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/../../../.." && pwd)
+CC="$ROOT_DIR/c99"
+CFLAGS="${CFLAGS:-} -I$ROOT_DIR/include"
+t="$1"
+scratch=$(mktemp -d)
+
+cleanup() {
+    rm -rf "$scratch"
+}
+trap cleanup EXIT HUP INT TERM
+
+cat "$t"
+
+{
+    printf '#include "%s/%s"\n' "$(pwd)" "$t"
+    printf '#include <stddef.h>\n'
+    printf '#include <stdint.h>\n'
+    printf '#include <sys/types.h>\n'
+    printf '#include <sys/mman.h>\n'
+    printf '#include <fcntl.h>\n'
+    printf '#include <unistd.h>\n'
+    printf '#include "%s/lib/ctype.c"\n' "$ROOT_DIR"
+    printf '#include "%s/lib/string.c"\n' "$ROOT_DIR"
+    printf '#include "%s/lib/stdarg.c"\n' "$ROOT_DIR"
+    printf '#include "%s/lib/stdlib.c"\n' "$ROOT_DIR"
+    printf '#include "%s/lib/stdio.c"\n' "$ROOT_DIR"
+    printf '#include "%s/lib/math.c"\n' "$ROOT_DIR"
+} > "$scratch/single-exec-with-runtime.c"
+
+set -x
+
+if ! $CC $CFLAGS "$scratch/single-exec-with-runtime.c" -o "$t.bin"
+then
+    exit 1
+fi
+
+if ! "$t.bin" > "$t.output" 2>&1
+then
+    exit 1
+fi
+
+if ! diff -u "$t.expected" "$t.output"
+then
+    exit 1
+fi

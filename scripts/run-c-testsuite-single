@@ -1,0 +1,205 @@
+#!/bin/sh
+
+set -u
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+CTESTSUITE_DIR="$ROOT_DIR/test/c-testsuite"
+RUNNER="c99-local"
+REPORT_DIR="$ROOT_DIR/tmp/c-testsuite-single"
+TIMEOUT="5m"
+BUILD=1
+
+usage() {
+    cat <<EOF
+usage: $0 [options] [TEST...]
+
+Run c-testsuite single-exec tests one by one and write a pass/fail report.
+
+Options:
+  --runner NAME       runner in test/c-testsuite/runners/single-exec (default: c99-local)
+  --report-dir DIR    report directory (default: tmp/c-testsuite-single)
+  --timeout DURATION  timeout per test, passed to timeout(1) (default: 5m)
+  --no-build          do not run "make all" before the tests
+  -h, --help          show this help
+
+TEST may be a full path, a file name like 00219.c, or an id like 00219.
+With no TEST arguments, all tests/single-exec/*.c are run.
+EOF
+}
+
+die() {
+    echo "error: $*" >&2
+    exit 2
+}
+
+resolve_test() {
+    name=$(basename "$1")
+    case "$name" in
+        *.c) ;;
+        *) name="$name.c" ;;
+    esac
+
+    test_path="./tests/single-exec/$name"
+    if test -f "$CTESTSUITE_DIR/$test_path"
+    then
+        printf '%s\n' "$test_path"
+        return 0
+    fi
+
+    return 1
+}
+
+while test "$#" -gt 0
+do
+    case "$1" in
+        --runner)
+            test "$#" -ge 2 || die "--runner needs a value"
+            RUNNER="$2"
+            shift 2
+            ;;
+        --report-dir)
+            test "$#" -ge 2 || die "--report-dir needs a value"
+            REPORT_DIR="$2"
+            shift 2
+            ;;
+        --timeout)
+            test "$#" -ge 2 || die "--timeout needs a value"
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        --no-build)
+            BUILD=0
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            die "unknown option: $1"
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if ! test -d "$CTESTSUITE_DIR"
+then
+    die "missing c-testsuite directory: $CTESTSUITE_DIR"
+fi
+
+if ! test -x "$CTESTSUITE_DIR/runners/single-exec/$RUNNER"
+then
+    die "missing runner: test/c-testsuite/runners/single-exec/$RUNNER"
+fi
+
+if test "$BUILD" -eq 1
+then
+    (cd "$ROOT_DIR" && make all) || exit $?
+fi
+
+mkdir -p "$REPORT_DIR/logs" || exit $?
+: > "$REPORT_DIR/tests.list"
+: > "$REPORT_DIR/summary.tsv"
+: > "$REPORT_DIR/failed.list"
+: > "$REPORT_DIR/passed.list"
+: > "$REPORT_DIR/skipped.list"
+: > "$REPORT_DIR/rerun-failed.sh"
+
+printf '#!/bin/sh\nset -eu\n' > "$REPORT_DIR/rerun-failed.sh"
+chmod +x "$REPORT_DIR/rerun-failed.sh"
+
+if test "$#" -eq 0
+then
+    (cd "$CTESTSUITE_DIR" && find ./tests/single-exec -name '*.c' | sort) > "$REPORT_DIR/tests.list"
+else
+    for arg in "$@"
+    do
+        if ! resolved=$(resolve_test "$arg")
+        then
+            die "cannot find single-exec test for: $arg"
+        fi
+        printf '%s\n' "$resolved" >> "$REPORT_DIR/tests.list"
+    done
+fi
+
+total=$(wc -l < "$REPORT_DIR/tests.list" | tr -d ' ')
+if test "$total" -eq 0
+then
+    die "no tests selected"
+fi
+
+scratchdir=$(mktemp -d)
+cleanup() {
+    rm -rf "$scratchdir"
+}
+trap cleanup EXIT HUP INT TERM
+
+skipcmd="$CTESTSUITE_DIR/runners/single-exec/$RUNNER.skip"
+skipset="$scratchdir/skip_lut"
+if test -f "$skipcmd"
+then
+    (cd "$CTESTSUITE_DIR" && "./runners/single-exec/$RUNNER.skip") > "$scratchdir/skip.txt" || die "skip list command failed"
+else
+    : > "$scratchdir/skip.txt"
+fi
+(cd "$CTESTSUITE_DIR" && ./scripts/lib-exec/mkset "$skipset" "$scratchdir/skip.txt") || die "cannot build skip set"
+
+printf 'status\ttest\tlog\n' >> "$REPORT_DIR/summary.tsv"
+
+passed=0
+failed=0
+skipped=0
+current=0
+
+while IFS= read -r test_path
+do
+    current=$((current + 1))
+    base=$(basename "$test_path" .c)
+    log="$REPORT_DIR/logs/$base.log"
+
+    if (cd "$CTESTSUITE_DIR" && ./scripts/lib-exec/setlookup "$skipset" "$test_path")
+    then
+        skipped=$((skipped + 1))
+        printf 'SKIP\t%s\t%s\n' "$test_path" "$log" >> "$REPORT_DIR/summary.tsv"
+        printf '%s\n' "$test_path" >> "$REPORT_DIR/skipped.list"
+        printf '[%s/%s] SKIP %s\n' "$current" "$total" "$test_path"
+        continue
+    fi
+
+    printf '[%s/%s] RUN  %s\n' "$current" "$total" "$test_path"
+    if (cd "$CTESTSUITE_DIR" && timeout "$TIMEOUT" "./runners/single-exec/$RUNNER" "$test_path") > "$log" 2>&1
+    then
+        passed=$((passed + 1))
+        printf 'PASS\t%s\t%s\n' "$test_path" "$log" >> "$REPORT_DIR/summary.tsv"
+        printf '%s\n' "$test_path" >> "$REPORT_DIR/passed.list"
+    else
+        failed=$((failed + 1))
+        printf 'FAIL\t%s\t%s\n' "$test_path" "$log" >> "$REPORT_DIR/summary.tsv"
+        printf '%s\n' "$test_path" >> "$REPORT_DIR/failed.list"
+        printf "scripts/run-c-testsuite-single --no-build --report-dir %s %s\n" "$REPORT_DIR/$base" "$base" >> "$REPORT_DIR/rerun-failed.sh"
+        printf '        FAIL log: %s\n' "$log"
+    fi
+done < "$REPORT_DIR/tests.list"
+
+{
+    printf 'runner: %s\n' "$RUNNER"
+    printf 'total: %s\n' "$total"
+    printf 'passed: %s\n' "$passed"
+    printf 'failed: %s\n' "$failed"
+    printf 'skipped: %s\n' "$skipped"
+    printf 'summary: %s\n' "$REPORT_DIR/summary.tsv"
+    printf 'logs: %s\n' "$REPORT_DIR/logs"
+    printf 'failed list: %s\n' "$REPORT_DIR/failed.list"
+    printf 'rerun failed: %s\n' "$REPORT_DIR/rerun-failed.sh"
+} | tee "$REPORT_DIR/report.txt"
+
+if test "$failed" -gt 0
+then
+    exit 1
+fi

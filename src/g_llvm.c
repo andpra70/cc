@@ -159,6 +159,7 @@ void ast_emit_expr(Node *node) {
     case ND_OR: printf("  bin.lor\n"); break;
     case ND_BITAND: printf("  bin.band\n"); break;
     case ND_BITOR: printf("  bin.bor\n"); break;
+    case ND_BITXOR: printf("  bin.bxor\n"); break;
     default: printf("  ; unsupported expr kind=%d\n", node->kind); break;
   }
 }

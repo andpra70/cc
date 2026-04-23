@@ -52,6 +52,10 @@ typedef struct {
   ExtRelFix *ext_fixups;
   int n_ext_fixups;
   int cap_ext_fixups;
+  char **user_label_names;
+  int *user_label_ids;
+  int n_user_labels;
+  int cap_user_labels;
   int emit_rel_obj;
 } ElfCtx;
 
@@ -59,6 +63,15 @@ static int elf_cur_fn_fixed_args = 0;
 static int elf_cur_fn_is_variadic = 0;
 static int elf_cur_fn_arg_home_base = 8;
 static const char *elf_cur_fn_name = 0;
+static int elf_debug_enabled = 0;
+static const char *elf_debug_source_path = 0;
+static const char *elf_debug_comp_dir = ".";
+
+void set_elf_debug_options(int enabled, const char *source_path, const char *comp_dir) {
+  elf_debug_enabled = enabled;
+  elf_debug_source_path = source_path;
+  elf_debug_comp_dir = comp_dir ? comp_dir : ".";
+}
 
 void bb_reserve(BinBuf *b, size_t add) {
   if (b->len + add <= b->cap) return;
@@ -305,6 +318,30 @@ int find_func_label(ElfCtx *c, const char *name) {
     i++;
   }
   return -1;
+}
+
+int get_user_label(ElfCtx *c, const char *name) {
+  int i = 0;
+  while (i < c->n_user_labels) {
+    if (!strcmp(c->user_label_names[i], name)) return c->user_label_ids[i];
+    i++;
+  }
+  if (c->n_user_labels == c->cap_user_labels) {
+    int ncap = c->cap_user_labels ? c->cap_user_labels * 2 : 16;
+    char **nn = realloc(c->user_label_names, sizeof(char *) * ncap);
+    int *ni = realloc(c->user_label_ids, sizeof(int) * ncap);
+    if (!nn || !ni) {
+      eprintf("Error: out of memory for labels\n", 0, 0, 0, 0);
+      exit(1);
+    }
+    c->user_label_names = nn;
+    c->user_label_ids = ni;
+    c->cap_user_labels = ncap;
+  }
+  c->user_label_names[c->n_user_labels] = (char *)name;
+  c->user_label_ids[c->n_user_labels] = ctx_new_label(c);
+  c->n_user_labels = c->n_user_labels + 1;
+  return c->user_label_ids[c->n_user_labels - 1];
 }
 
 int emit_builtin_syscall_fallback(ElfCtx *c, const char *name) {
@@ -661,13 +698,16 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
     case ND_POST_DEC: {
       int inc = (node->kind == ND_PRE_INC || node->kind == ND_POST_INC) ? 1 : -1;
       int post = (node->kind == ND_POST_INC || node->kind == ND_POST_DEC);
+      int step = node->lhs ? pointee_size(node->lhs->type_name, node->lhs->ptr_level) : 1;
+      if (node->lhs && node->lhs->ptr_level <= 0) step = 1;
+      if (step < 1) step = 1;
       if (node->lhs && node->lhs->kind == ND_DEREF) {
         emit_expr_elf(c, node->lhs->lhs);
         emit_pop_rdi(c);
         bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x8b); bb_emit1(&c->code, 0x07); // mov rax,[rdi]
         if (post) emit_push_rax(c);
-        if (inc > 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc0); bb_emit1(&c->code, 0x01); }
-        else { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, 0x01); }
+        if (inc > 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc0); bb_emit1(&c->code, step); }
+        else { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, step); }
         bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0x07); // mov [rdi],rax
         if (!post) emit_push_rax(c);
         return;
@@ -676,8 +716,8 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
         int off = node->lhs->sym->offset;
         emit_mov_rax_local(c, off);
         if (post) emit_push_rax(c);
-        if (inc > 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc0); bb_emit1(&c->code, 0x01); }
-        else { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, 0x01); }
+        if (inc > 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc0); bb_emit1(&c->code, step); }
+        else { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, step); }
         emit_mov_local_rax(c, off);
         if (!post) emit_push_rax(c);
         return;
@@ -687,8 +727,8 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
         if (lookup_global_info(node->lhs->name, &goff, NULL, NULL, NULL, NULL)) {
           emit_mov_rax_global(c, goff);
           if (post) emit_push_rax(c);
-          if (inc > 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc0); bb_emit1(&c->code, 0x01); }
-          else { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, 0x01); }
+          if (inc > 0) { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xc0); bb_emit1(&c->code, step); }
+          else { bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x83); bb_emit1(&c->code, 0xe8); bb_emit1(&c->code, step); }
           emit_mov_global_rax(c, goff);
           if (!post) emit_push_rax(c);
           return;
@@ -713,7 +753,17 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
 
   switch (node->kind) {
     case ND_ADD: bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x01); bb_emit1(&c->code, 0xf8); break;
-    case ND_SUB: bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x29); bb_emit1(&c->code, 0xf8); break;
+    case ND_SUB:
+      bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x29); bb_emit1(&c->code, 0xf8);
+      if (node->lhs && node->rhs && node->lhs->ptr_level > 0 && node->rhs->ptr_level > 0) {
+        int step = pointee_size(node->lhs->type_name, node->lhs->ptr_level);
+        if (step > 1) {
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0xc7); bb_emit1(&c->code, 0xc1); bb_emit4(&c->code, step); // mov rcx,step
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x99); // cqo
+          bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0xf7); bb_emit1(&c->code, 0xf9); // idiv rcx
+        }
+      }
+      break;
     case ND_MUL: bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x0f); bb_emit1(&c->code, 0xaf); bb_emit1(&c->code, 0xc7); break;
     case ND_DIV: bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x99); bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0xf7); bb_emit1(&c->code, 0xff); break;
     case ND_MOD:
@@ -748,6 +798,9 @@ void emit_expr_elf(ElfCtx *c, Node *node) {
       break;
     case ND_BITOR:
       bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x09); bb_emit1(&c->code, 0xf8);
+      break;
+    case ND_BITXOR:
+      bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xf8);
       break;
     default:
       bb_emit1(&c->code, 0x31); bb_emit1(&c->code, 0xc0); // xor eax,eax
@@ -803,6 +856,27 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
       emit_je_label(c, l_end);
       emit_stmt_elf(c, node->body);
       emit_jmp_label(c, l_begin);
+      ctx_place_label(c, l_end);
+      c->continue_top = c->continue_top - 1;
+      c->break_top = c->break_top - 1;
+      return;
+    }
+    case ND_DO: {
+      int l_begin = ctx_new_label(c);
+      int l_cont = ctx_new_label(c);
+      int l_end = ctx_new_label(c);
+      c->break_labels[c->break_top] = l_end;
+      c->break_top = c->break_top + 1;
+      c->continue_labels[c->continue_top] = l_cont;
+      c->continue_top = c->continue_top + 1;
+      ctx_place_label(c, l_begin);
+      emit_stmt_elf(c, node->body);
+      ctx_place_label(c, l_cont);
+      emit_expr_elf(c, node->cond);
+      emit_pop_rax(c);
+      emit_cmp_rax_zero(c);
+      bb_emit1(&c->code, 0x0f); bb_emit1(&c->code, 0x85);
+      emit_rel32_fixup(c, l_begin);
       ctx_place_label(c, l_end);
       c->continue_top = c->continue_top - 1;
       c->break_top = c->break_top - 1;
@@ -880,6 +954,13 @@ void emit_stmt_elf(ElfCtx *c, Node *node) {
     case ND_CONTINUE:
       if (c->continue_top > 0) emit_jmp_label(c, c->continue_labels[c->continue_top - 1]);
       return;
+    case ND_GOTO:
+      if (node->name) emit_jmp_label(c, get_user_label(c, node->name));
+      return;
+    case ND_LABEL:
+      if (node->name) ctx_place_label(c, get_user_label(c, node->name));
+      emit_stmt_elf(c, node->body);
+      return;
     case ND_RETURN:
       if (node->lhs) {
         emit_expr_elf(c, node->lhs);
@@ -926,6 +1007,7 @@ void emit_function_elf(ElfCtx *c, FnLabel *fn) {
   elf_cur_fn_fixed_args = (fn && fn->fn) ? fn->fn->fixed_args : 0;
   elf_cur_fn_is_variadic = (fn && fn->fn) ? fn->fn->is_variadic : 0;
   elf_cur_fn_name = (fn && fn->name) ? fn->name : 0;
+  c->n_user_labels = 0;
   ctx_place_label(c, fn->label);
   bb_emit1(&c->code, 0x55);                               // push rbp
   bb_emit1(&c->code, 0x48); bb_emit1(&c->code, 0x89); bb_emit1(&c->code, 0xe5); // mov rbp,rsp
@@ -1067,29 +1149,84 @@ void copy_cstr(unsigned char *dst, size_t *off, const char *s) {
   dst[(*off)++] = 0;
 }
 
+uint32_t shstr_name_off(const char *tab, size_t size, const char *name) {
+  size_t i = 0;
+  while (i < size) {
+    if (tab[i] && !strcmp(tab + i, name)) return (uint32_t)i;
+    while (i < size && tab[i]) i++;
+    i++;
+  }
+  return 0;
+}
+
+unsigned char *build_debug_info(const char *name, const char *comp_dir, size_t *out_size) {
+  const char *producer = "c99";
+  size_t producer_len = strlen(producer) + 1;
+  size_t name_len = strlen(name) + 1;
+  size_t comp_dir_len = strlen(comp_dir) + 1;
+  size_t die_size = 1 + producer_len + 2 + name_len + comp_dir_len;
+  size_t size = 4 + 2 + 4 + 1 + die_size;
+  unsigned char *buf = calloc(1, size);
+  size_t off = 0;
+  if (!buf) return NULL;
+
+  put_u32_le(buf + off, (uint32_t)(size - 4)); off += 4; /* unit_length */
+  put_u16_le(buf + off, 4); off += 2;                    /* DWARF v4 */
+  put_u32_le(buf + off, 0); off += 4;                    /* .debug_abbrev offset */
+  buf[off++] = 8;                                        /* address size */
+  buf[off++] = 1;                                        /* abbrev code: compile unit */
+  memcpy(buf + off, producer, producer_len); off += producer_len;
+  put_u16_le(buf + off, 0x000c); off += 2;               /* DW_LANG_C99 */
+  memcpy(buf + off, name, name_len); off += name_len;
+  memcpy(buf + off, comp_dir, comp_dir_len); off += comp_dir_len;
+
+  *out_size = off;
+  return buf;
+}
+
 int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
-  static const char shstrtab[] = "\0.text\0.shstrtab\0.strtab\0.symtab\0.rela.text\0";
-  const uint32_t sh_name_text = 1;
-  const uint32_t sh_name_shstrtab = 7;
-  const uint32_t sh_name_strtab = 17;
-  const uint32_t sh_name_symtab = 25;
-  const uint32_t sh_name_rela_text = 33;
+  static const char shstrtab[] = "\0.text\0.shstrtab\0.strtab\0.symtab\0.rela.text\0.debug_abbrev\0.debug_info\0.debug_str\0";
+  static const unsigned char debug_abbrev[] = {
+    1, 0x11, 0,          /* compile_unit, no children */
+    0x25, 0x08,          /* DW_AT_producer, DW_FORM_string */
+    0x13, 0x05,          /* DW_AT_language, DW_FORM_data2 */
+    0x03, 0x08,          /* DW_AT_name, DW_FORM_string */
+    0x1b, 0x08,          /* DW_AT_comp_dir, DW_FORM_string */
+    0, 0,                /* end attributes */
+    0                    /* end abbrev table */
+  };
+  const uint32_t sh_name_text = shstr_name_off(shstrtab, sizeof(shstrtab), ".text");
+  const uint32_t sh_name_shstrtab = shstr_name_off(shstrtab, sizeof(shstrtab), ".shstrtab");
+  const uint32_t sh_name_strtab = shstr_name_off(shstrtab, sizeof(shstrtab), ".strtab");
+  const uint32_t sh_name_symtab = shstr_name_off(shstrtab, sizeof(shstrtab), ".symtab");
+  const uint32_t sh_name_rela_text = shstr_name_off(shstrtab, sizeof(shstrtab), ".rela.text");
+  const uint32_t sh_name_debug_abbrev = shstr_name_off(shstrtab, sizeof(shstrtab), ".debug_abbrev");
+  const uint32_t sh_name_debug_info = shstr_name_off(shstrtab, sizeof(shstrtab), ".debug_info");
+  const uint32_t sh_name_debug_str = shstr_name_off(shstrtab, sizeof(shstrtab), ".debug_str");
   const size_t shstrtab_size = sizeof(shstrtab);
   const size_t ehdr_size = 64;
   const size_t shent_size = 64;
-  const int shnum = 6;
+  const int debug_enabled = elf_debug_enabled ? 1 : 0;
+  const int shnum = debug_enabled ? 9 : 6;
   int nsyms = 2 + c->nfuncs + c->n_ext_syms;
   size_t symtab_size = (size_t)nsyms * 24;
   size_t rela_size = (size_t)c->n_ext_fixups * 24;
+  size_t debug_abbrev_size = sizeof(debug_abbrev);
+  size_t debug_info_size = 0;
+  size_t debug_str_size = debug_enabled ? 1 : 0;
   size_t strtab_size = 1;
   size_t text_off = ehdr_size;
   size_t shstr_off;
   size_t strtab_off;
   size_t symtab_off;
   size_t rela_off;
+  size_t debug_abbrev_off = 0;
+  size_t debug_info_off = 0;
+  size_t debug_str_off = 0;
   size_t shoff;
   size_t file_size;
   unsigned char *img;
+  unsigned char *debug_info = NULL;
   size_t off;
   int *name_offs_def;
   int *name_offs_ext;
@@ -1104,21 +1241,38 @@ int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
     const char *name = c->ext_syms[i] ? c->ext_syms[i] : "";
     strtab_size += strlen(name) + 1;
   }
+  if (debug_enabled) {
+    const char *debug_name = elf_debug_source_path ? elf_debug_source_path : "";
+    const char *debug_dir = elf_debug_comp_dir ? elf_debug_comp_dir : ".";
+    debug_info = build_debug_info(debug_name, debug_dir, &debug_info_size);
+    if (!debug_info) return 1;
+  }
 
   shstr_off = align_up_size(text_off + c->code.len, 1);
   strtab_off = align_up_size(shstr_off + shstrtab_size, 1);
   symtab_off = align_up_size(strtab_off + strtab_size, 8);
   rela_off = align_up_size(symtab_off + symtab_size, 8);
-  shoff = align_up_size(rela_off + rela_size, 8);
+  if (debug_enabled) {
+    debug_abbrev_off = align_up_size(rela_off + rela_size, 1);
+    debug_info_off = align_up_size(debug_abbrev_off + debug_abbrev_size, 1);
+    debug_str_off = align_up_size(debug_info_off + debug_info_size, 1);
+    shoff = align_up_size(debug_str_off + debug_str_size, 8);
+  } else {
+    shoff = align_up_size(rela_off + rela_size, 8);
+  }
   file_size = shoff + (size_t)shnum * shent_size;
 
   img = calloc(1, file_size);
-  if (!img) return 1;
+  if (!img) {
+    if (debug_info) free(debug_info);
+    return 1;
+  }
   name_offs_def = malloc(sizeof(int) * (c->nfuncs > 0 ? c->nfuncs : 1));
   name_offs_ext = malloc(sizeof(int) * (c->n_ext_syms > 0 ? c->n_ext_syms : 1));
   if (!name_offs_def || !name_offs_ext) {
     if (name_offs_def) free(name_offs_def);
     if (name_offs_ext) free(name_offs_ext);
+    if (debug_info) free(debug_info);
     free(img);
     return 1;
   }
@@ -1140,6 +1294,10 @@ int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
 
   if (c->code.len > 0) memcpy(img + text_off, c->code.data, c->code.len);
   memcpy(img + shstr_off, shstrtab, shstrtab_size);
+  if (debug_enabled) {
+    memcpy(img + debug_abbrev_off, debug_abbrev, debug_abbrev_size);
+    memcpy(img + debug_info_off, debug_info, debug_info_size);
+  }
 
   {
     size_t st_off = strtab_off;
@@ -1168,6 +1326,7 @@ int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
       if (c->funcs[i].label < 0 || c->funcs[i].label >= c->nlabels || !c->label_set[c->funcs[i].label]) {
         free(name_offs_def);
         free(name_offs_ext);
+        if (debug_info) free(debug_info);
         free(img);
         return 1;
       }
@@ -1238,6 +1397,29 @@ int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
     put_u32_le(sh + shent_size * 5 + 44, 1); // info .text
     put_u64_le(sh + shent_size * 5 + 48, 8);
     put_u64_le(sh + shent_size * 5 + 56, 24);
+
+    if (debug_enabled) {
+      // .debug_abbrev
+      put_u32_le(sh + shent_size * 6 + 0, sh_name_debug_abbrev);
+      put_u32_le(sh + shent_size * 6 + 4, 1);
+      put_u64_le(sh + shent_size * 6 + 24, (uint64_t)debug_abbrev_off);
+      put_u64_le(sh + shent_size * 6 + 32, (uint64_t)debug_abbrev_size);
+      put_u64_le(sh + shent_size * 6 + 48, 1);
+
+      // .debug_info
+      put_u32_le(sh + shent_size * 7 + 0, sh_name_debug_info);
+      put_u32_le(sh + shent_size * 7 + 4, 1);
+      put_u64_le(sh + shent_size * 7 + 24, (uint64_t)debug_info_off);
+      put_u64_le(sh + shent_size * 7 + 32, (uint64_t)debug_info_size);
+      put_u64_le(sh + shent_size * 7 + 48, 1);
+
+      // .debug_str
+      put_u32_le(sh + shent_size * 8 + 0, sh_name_debug_str);
+      put_u32_le(sh + shent_size * 8 + 4, 1);
+      put_u64_le(sh + shent_size * 8 + 24, (uint64_t)debug_str_off);
+      put_u64_le(sh + shent_size * 8 + 32, (uint64_t)debug_str_size);
+      put_u64_le(sh + shent_size * 8 + 48, 1);
+    }
   }
 
   off = 0;
@@ -1246,6 +1428,7 @@ int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
     if (n <= 0) {
       free(name_offs_def);
       free(name_offs_ext);
+      if (debug_info) free(debug_info);
       free(img);
       return 1;
     }
@@ -1254,6 +1437,7 @@ int write_elf_rel_obj_fd(ElfCtx *c, int out_fd) {
 
   free(name_offs_def);
   free(name_offs_ext);
+  if (debug_info) free(debug_info);
   free(img);
   return 0;
 }
@@ -1359,15 +1543,55 @@ int write_ar_single_member_fd(int out_fd, const char *member_name, const unsigne
 }
 
 int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
+  static const char shstrtab[] = "\0.text\0.shstrtab\0.debug_abbrev\0.debug_info\0.debug_str\0";
+  static const unsigned char debug_abbrev[] = {
+    1, 0x11, 0,
+    0x25, 0x08,
+    0x13, 0x05,
+    0x03, 0x08,
+    0x1b, 0x08,
+    0, 0,
+    0
+  };
   const uint64_t base = 0x400000;
   const size_t code_off = 0x1000;
-  size_t file_size = code_off + code->len;
+  const size_t shent_size = 64;
+  const int debug_enabled = elf_debug_enabled ? 1 : 0;
+  const int shnum = debug_enabled ? 6 : 0;
+  size_t load_size = code_off + code->len;
+  size_t shstrtab_size = sizeof(shstrtab);
+  size_t debug_abbrev_size = sizeof(debug_abbrev);
+  size_t debug_info_size = 0;
+  size_t debug_str_size = debug_enabled ? 1 : 0;
+  size_t shstr_off = 0;
+  size_t debug_abbrev_off = 0;
+  size_t debug_info_off = 0;
+  size_t debug_str_off = 0;
+  size_t shoff = 0;
+  size_t file_size = load_size;
   size_t off = 0;
   unsigned char *img;
+  unsigned char *debug_info = NULL;
+
+  if (debug_enabled) {
+    const char *debug_name = elf_debug_source_path ? elf_debug_source_path : "";
+    const char *debug_dir = elf_debug_comp_dir ? elf_debug_comp_dir : ".";
+    debug_info = build_debug_info(debug_name, debug_dir, &debug_info_size);
+    if (!debug_info) return 1;
+    shstr_off = align_up_size(load_size, 1);
+    debug_abbrev_off = align_up_size(shstr_off + shstrtab_size, 1);
+    debug_info_off = align_up_size(debug_abbrev_off + debug_abbrev_size, 1);
+    debug_str_off = align_up_size(debug_info_off + debug_info_size, 1);
+    shoff = align_up_size(debug_str_off + debug_str_size, 8);
+    file_size = shoff + (size_t)shnum * shent_size;
+  }
 
   if (parse_verbose) eprintf("[v] elf: write begin code_len=%d file_size=%d\n", (int)code->len, (int)file_size, 0, 0);
   img = (unsigned char *)calloc(1, file_size);
-  if (!img) return 1;
+  if (!img) {
+    if (debug_info) free(debug_info);
+    return 1;
+  }
   if (parse_verbose) eprintf("[v] elf: write calloc ok ptr=%ld\n", (long)img, 0, 0, 0);
 
   img[0] = 0x7f; img[1] = 'E'; img[2] = 'L'; img[3] = 'F';
@@ -1379,9 +1603,15 @@ int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
   put_u32_le(img + 20, 1);
   put_u64_le(img + 24, base + code_off + entry_off);
   put_u64_le(img + 32, 64);  // e_phoff
+  if (debug_enabled) put_u64_le(img + 40, (uint64_t)shoff);
   put_u16_le(img + 52, 64);  // e_ehsize
   put_u16_le(img + 54, 56);  // e_phentsize
   put_u16_le(img + 56, 1);   // e_phnum
+  if (debug_enabled) {
+    put_u16_le(img + 58, (uint16_t)shent_size);
+    put_u16_le(img + 60, (uint16_t)shnum);
+    put_u16_le(img + 62, 2);
+  }
 
   // Program header starts at offset 64.
   put_u32_le(img + 64 + 0, 1);                // PT_LOAD
@@ -1389,8 +1619,8 @@ int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
   put_u64_le(img + 64 + 8, 0);                // p_offset
   put_u64_le(img + 64 + 16, base);            // p_vaddr
   put_u64_le(img + 64 + 24, base);            // p_paddr
-  put_u64_le(img + 64 + 32, (uint64_t)file_size);
-  put_u64_le(img + 64 + 40, (uint64_t)file_size);
+  put_u64_le(img + 64 + 32, (uint64_t)load_size);
+  put_u64_le(img + 64 + 40, (uint64_t)load_size);
   put_u64_le(img + 64 + 48, 0x1000);
 
   {
@@ -1400,19 +1630,98 @@ int write_elf_exec_fd(BinBuf *code, size_t entry_off, int out_fd) {
       ci = ci + 1;
     }
   }
+  if (debug_enabled) {
+    unsigned char *sh;
+    memcpy(img + shstr_off, shstrtab, shstrtab_size);
+    memcpy(img + debug_abbrev_off, debug_abbrev, debug_abbrev_size);
+    memcpy(img + debug_info_off, debug_info, debug_info_size);
+
+    sh = img + shoff;
+    memset(sh, 0, (size_t)shnum * shent_size);
+
+    // .text
+    put_u32_le(sh + shent_size * 1 + 0, shstr_name_off(shstrtab, shstrtab_size, ".text"));
+    put_u32_le(sh + shent_size * 1 + 4, 1);
+    put_u64_le(sh + shent_size * 1 + 8, 6);
+    put_u64_le(sh + shent_size * 1 + 16, base + code_off);
+    put_u64_le(sh + shent_size * 1 + 24, (uint64_t)code_off);
+    put_u64_le(sh + shent_size * 1 + 32, (uint64_t)code->len);
+    put_u64_le(sh + shent_size * 1 + 48, 16);
+
+    // .shstrtab
+    put_u32_le(sh + shent_size * 2 + 0, shstr_name_off(shstrtab, shstrtab_size, ".shstrtab"));
+    put_u32_le(sh + shent_size * 2 + 4, 3);
+    put_u64_le(sh + shent_size * 2 + 24, (uint64_t)shstr_off);
+    put_u64_le(sh + shent_size * 2 + 32, (uint64_t)shstrtab_size);
+    put_u64_le(sh + shent_size * 2 + 48, 1);
+
+    // .debug_abbrev
+    put_u32_le(sh + shent_size * 3 + 0, shstr_name_off(shstrtab, shstrtab_size, ".debug_abbrev"));
+    put_u32_le(sh + shent_size * 3 + 4, 1);
+    put_u64_le(sh + shent_size * 3 + 24, (uint64_t)debug_abbrev_off);
+    put_u64_le(sh + shent_size * 3 + 32, (uint64_t)debug_abbrev_size);
+    put_u64_le(sh + shent_size * 3 + 48, 1);
+
+    // .debug_info
+    put_u32_le(sh + shent_size * 4 + 0, shstr_name_off(shstrtab, shstrtab_size, ".debug_info"));
+    put_u32_le(sh + shent_size * 4 + 4, 1);
+    put_u64_le(sh + shent_size * 4 + 24, (uint64_t)debug_info_off);
+    put_u64_le(sh + shent_size * 4 + 32, (uint64_t)debug_info_size);
+    put_u64_le(sh + shent_size * 4 + 48, 1);
+
+    // .debug_str
+    put_u32_le(sh + shent_size * 5 + 0, shstr_name_off(shstrtab, shstrtab_size, ".debug_str"));
+    put_u32_le(sh + shent_size * 5 + 4, 1);
+    put_u64_le(sh + shent_size * 5 + 24, (uint64_t)debug_str_off);
+    put_u64_le(sh + shent_size * 5 + 32, (uint64_t)debug_str_size);
+    put_u64_le(sh + shent_size * 5 + 48, 1);
+  }
   if (parse_verbose) eprintf("[v] elf: write copy code done\n", 0, 0, 0, 0);
 
   while (off < file_size) {
     long n = write(out_fd, img + off, file_size - off);
     if (n <= 0) {
+      if (debug_info) free(debug_info);
       free(img);
       return 1;
     }
     off += (size_t)n;
   }
   if (parse_verbose) eprintf("[v] elf: write bytes done off=%d\n", (int)off, 0, 0, 0);
+  if (debug_info) free(debug_info);
   free(img);
   return 0;
+}
+
+void apply_user_global_initializers(ElfCtx *c, size_t globals_pos) {
+  const uint64_t base = 0x400000;
+  const uint64_t code_off = 0x1000;
+  int gs = global_storage_size();
+  for (GlobalSymbol *g = user_globals; g; g = g->next) {
+    size_t pos;
+    int sz;
+    uint64_t v;
+    if (!g->has_init) continue;
+    if (g->offset < 0 || g->offset >= gs) continue;
+    pos = globals_pos + (size_t)g->offset;
+    if (pos >= c->code.len) continue;
+    v = (uint64_t)g->init_value;
+    if (g->init_ref) {
+      GlobalSymbol *ref = find_user_global(g->init_ref);
+      if (!ref) continue;
+      v = base + code_off + globals_pos + (uint64_t)ref->offset;
+    }
+    sz = g->ptr_level > 0 ? 8 : type_size_from_name(g->type_name);
+    if (sz <= 1 && pos + 1 <= c->code.len) {
+      c->code.data[pos] = (unsigned char)v;
+    } else if (sz == 2 && pos + 2 <= c->code.len) {
+      put_u16_le(c->code.data + pos, (uint16_t)v);
+    } else if (sz == 4 && pos + 4 <= c->code.len) {
+      put_u32_le(c->code.data + pos, (uint32_t)v);
+    } else if (pos + 8 <= c->code.len) {
+      put_u64_le(c->code.data + pos, v);
+    }
+  }
 }
 
 int compile_to_elf_source_fd(char *source, int out_fd) {
@@ -1474,6 +1783,8 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   int main_lbl = find_func_label(&c, "main");
   if (main_lbl < 0) {
     free(c.funcs);
+    free(c.user_label_names);
+    free(c.user_label_ids);
     free(source);
     reset_string_literals();
     eprintf("Error: main() not compiled from source\n", 0, 0, 0, 0);
@@ -1503,17 +1814,19 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   ctx_place_label(&c, c.globals_label);
   {
     int i = 0;
+    size_t globals_pos = c.code.len;
     /* ast.c computes this from CompilerGlobalState via sizeof/offsetof. */
     int gs = global_storage_size();
     while (i < gs) {
       bb_emit1(&c.code, 0);
       i++;
     }
+    apply_user_global_initializers(&c, globals_pos);
   }
 
   if (patch_fixups(&c) != 0) {
     eprintf("Error: unresolved labels in codegen\n", 0, 0, 0, 0);
-    free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(source);
+    free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(c.user_label_names); free(c.user_label_ids); free(source);
     reset_string_literals();
     return 1;
   }
@@ -1526,6 +1839,8 @@ int compile_to_elf_source_fd(char *source, int out_fd) {
   free(c.label_set);
   free(c.fixups);
   free(c.funcs);
+  free(c.user_label_names);
+  free(c.user_label_ids);
   free(source);
   reset_string_literals();
   if (rc != 0) {
@@ -1649,7 +1964,7 @@ int compile_to_object_source_fd(char *source, int out_fd) {
 
   if (patch_fixups(&c) != 0) {
     eprintf("Error: unresolved labels in codegen\n", 0, 0, 0, 0);
-    free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(c.ext_syms); free(c.ext_fixups); free(source);
+    free(c.code.data); free(c.label_pos); free(c.label_set); free(c.fixups); free(c.funcs); free(c.ext_syms); free(c.ext_fixups); free(c.user_label_names); free(c.user_label_ids); free(source);
     reset_string_literals();
     return 1;
   }
@@ -1663,6 +1978,8 @@ int compile_to_object_source_fd(char *source, int out_fd) {
     free(c.funcs);
     free(c.ext_syms);
     free(c.ext_fixups);
+    free(c.user_label_names);
+    free(c.user_label_ids);
     free(source);
     reset_string_literals();
     if (rc != 0) {

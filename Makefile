@@ -5,6 +5,10 @@ C99 ?= c99
 GCC ?= gcc
 RANLIB ?= ranlib
 TEST_DIR ?= src/test
+CTESTSUITE_DIR ?= test/c-testsuite
+CTESTSUITE_RUNNERS ?= gcc-x86_64 clang-x86_64 tcc-x86_64
+CTESTSUITE_C99_RUNNER ?= c99-local
+CTESTSUITE_TESTS ?=
 
 c99: src/c99.c src/ast.c src/g_asm.c src/g_interpreter.c src/g_elf.c src/g_llvm.c src/minilib.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/c99.c -o c99
@@ -43,6 +47,17 @@ test-mixed-objects: all $(TEST_DIR)/test_mix_cc.c $(TEST_DIR)/test_mix_c99.c $(T
 test-profile: $(TEST_DIR)/test_profile.c lib/minilib.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(TEST_DIR)/test_profile.c lib/minilib.c -o test_profile.host -ldl -lm
 	./test_profile.host
+
+test-c-testsuite-runners: all
+	cd $(CTESTSUITE_DIR) && for runner in $(CTESTSUITE_RUNNERS); do ./single-exec $$runner; done
+
+test-c-testsuite-c99: all
+	cd $(CTESTSUITE_DIR) && ./single-exec $(CTESTSUITE_C99_RUNNER)
+
+test-c-testsuite-c99-each: all
+	./scripts/run-c-testsuite-single --no-build --runner $(CTESTSUITE_C99_RUNNER) $(CTESTSUITE_TESTS)
+
+test-c-testsuite: test-c-testsuite-runners test-c-testsuite-c99
 
 self: clean all src/c99.c 
 	./c99 src/c99.c -o c99.elf

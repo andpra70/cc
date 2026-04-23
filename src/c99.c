@@ -150,6 +150,7 @@ int compiler_entry(int argc, char **argv, int argi) {
   int mode = MODE_ELF;
   int elf_out_kind = ELF_OUT_EXEC;
   int verbose = 0;
+  int debug_info = 0;
   char *input_path = NULL;
   char *output_path = NULL;
   char *output_file = NULL;
@@ -191,6 +192,23 @@ int compiler_entry(int argc, char **argv, int argi) {
       verbose = 1;
       continue;
     }
+    if (!strcmp(argv[i], "-g")) {
+      debug_info = 1;
+      continue;
+    }
+    if (!strcmp(argv[i], "-I")) {
+      i++;
+      if (i >= argc) {
+        eprintf("Error: missing argument after -I\n", 0, 0, 0, 0);
+        return 1;
+      }
+      add_include_dir(argv[i]);
+      continue;
+    }
+    if (argv[i][0] == '-' && argv[i][1] == 'I' && argv[i][2]) {
+      add_include_dir(argv[i] + 2);
+      continue;
+    }
     if (!strcmp(argv[i], "-o")) {
       i++;
       if (i >= argc) {
@@ -212,7 +230,7 @@ int compiler_entry(int argc, char **argv, int argi) {
   }
 
   if (!input_path) {
-    eprintf("Usage: %s [-s|-a|-i|-c|-ar] [-v] [-l out_dir] [-o out_file] input.c\n", (long)argv[0], 0, 0, 0);
+    eprintf("Usage: %s [-s|-a|-i|-c|-ar] [-g] [-v] [-I dir] [-l out_dir] [-o out_file] input.c\n", (long)argv[0], 0, 0, 0);
     return 1;
   }
   if (mode != MODE_ELF) elf_out_kind = ELF_OUT_EXEC;
@@ -221,10 +239,11 @@ int compiler_entry(int argc, char **argv, int argi) {
     else if (str_has_suffix(output_file, ".a")) elf_out_kind = ELF_OUT_AR;
   }
   parse_verbose = verbose;
+  set_elf_debug_options(debug_info, input_path, ".");
   if (verbose) {
     eprintf("[v] mode=%d elf_out=%d input=%s out_file=%s\n", mode, elf_out_kind, (long)input_path,
             (long)(output_file ? output_file : "(auto)"));
-    eprintf("[v] out_dir=%s\n", (long)(output_dir ? output_dir : "(cwd)"), 0, 0, 0);
+    eprintf("[v] out_dir=%s debug=%d\n", (long)(output_dir ? output_dir : "(cwd)"), debug_info, 0, 0);
   }
 
   source = read_file_source(input_path);

@@ -14,6 +14,7 @@ typedef struct Macro {
 } Macro;
 
 Macro *macros = NULL;
+extern int parse_verbose;
 char *src_stack[CC_CFG_PP_SRC_STACK_MAX];
 int src_ptr = 0;
 int pp_if_parent_active[CC_CFG_PP_SRC_STACK_MAX];
@@ -21,6 +22,8 @@ int pp_if_cond_true[CC_CFG_PP_SRC_STACK_MAX];
 int pp_if_else_seen[CC_CFG_PP_SRC_STACK_MAX];
 int pp_if_active[CC_CFG_PP_SRC_STACK_MAX];
 int pp_if_top = 0;
+char *include_dirs[32];
+int include_dir_count = 0;
 
 int pp_is_active() {
   if (pp_if_top <= 0) return 1;
@@ -74,12 +77,257 @@ char *find_macro(char *name) {
   return NULL;
 }
 
+void undef_macro(char *name) {
+  Macro head;
+  Macro *prev = &head;
+  Macro *m = macros;
+  head.next = macros;
+  while (m) {
+    if (!strcmp(m->name, name)) {
+      prev->next = m->next;
+      macros = head.next;
+      return;
+    }
+    prev = m;
+    m = m->next;
+  }
+}
+
+void add_include_dir(char *path) {
+  if (!path || !path[0]) return;
+  if (include_dir_count >= 32) {
+    eprintf("Error: too many include directories\n", 0, 0, 0, 0);
+    exit(1);
+  }
+  include_dirs[include_dir_count++] = path;
+}
+
+char *pp_eval_p;
+
+void pp_eval_skip_ws() {
+  while (*pp_eval_p == ' ' || *pp_eval_p == '\t') pp_eval_p++;
+}
+
+int pp_eval_match(const char *s) {
+  char *p = pp_eval_p;
+  while (*s) {
+    if (*p != *s) return 0;
+    p++;
+    s++;
+  }
+  pp_eval_p = p;
+  return 1;
+}
+
+long pp_eval_expr();
+
+long pp_eval_primary() {
+  long v = 0;
+  pp_eval_skip_ws();
+  if (*pp_eval_p == '(') {
+    pp_eval_p++;
+    v = pp_eval_expr();
+    pp_eval_skip_ws();
+    if (*pp_eval_p == ')') pp_eval_p++;
+    return v;
+  }
+  if ((*pp_eval_p >= '0' && *pp_eval_p <= '9')) {
+    if (pp_eval_p[0] == '0' && (pp_eval_p[1] == 'x' || pp_eval_p[1] == 'X')) {
+      pp_eval_p += 2;
+      while (1) {
+        int c = *pp_eval_p;
+        int d = -1;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = 10 + (c - 'a');
+        else if (c >= 'A' && c <= 'F') d = 10 + (c - 'A');
+        if (d < 0) break;
+        v = v * 16 + d;
+        pp_eval_p++;
+      }
+      return v;
+    }
+    while (*pp_eval_p >= '0' && *pp_eval_p <= '9') {
+      v = v * 10 + (*pp_eval_p - '0');
+      pp_eval_p++;
+    }
+    return v;
+  }
+  if (isalpha(*pp_eval_p) || *pp_eval_p == '_') {
+    char *start = pp_eval_p;
+    int len;
+    char name[64];
+    int i = 0;
+    while (isalnum(*pp_eval_p) || *pp_eval_p == '_') pp_eval_p++;
+    len = pp_eval_p - start;
+    while (i < len && i < 63) { name[i] = start[i]; i++; }
+    name[i] = 0;
+    if (!strcmp(name, "defined")) {
+      int has_paren = 0;
+      pp_eval_skip_ws();
+      if (*pp_eval_p == '(') { has_paren = 1; pp_eval_p++; }
+      pp_eval_skip_ws();
+      start = pp_eval_p;
+      i = 0;
+      while (isalnum(*pp_eval_p) || *pp_eval_p == '_') pp_eval_p++;
+      len = pp_eval_p - start;
+      while (i < len && i < 63) { name[i] = start[i]; i++; }
+      name[i] = 0;
+      pp_eval_skip_ws();
+      if (has_paren && *pp_eval_p == ')') pp_eval_p++;
+      return find_macro(name) ? 1 : 0;
+    }
+    {
+      char *body = find_macro(name);
+      char *saved = pp_eval_p;
+      if (body && body[0]) {
+        pp_eval_p = body;
+        v = pp_eval_expr();
+        pp_eval_p = saved;
+        return v;
+      }
+    }
+    return 0;
+  }
+  return 0;
+}
+
+long pp_eval_unary() {
+  pp_eval_skip_ws();
+  if (*pp_eval_p == '!') { pp_eval_p++; return !pp_eval_unary(); }
+  if (*pp_eval_p == '-') { pp_eval_p++; return -pp_eval_unary(); }
+  if (*pp_eval_p == '+') { pp_eval_p++; return pp_eval_unary(); }
+  return pp_eval_primary();
+}
+
+long pp_eval_mul() {
+  long v = pp_eval_unary();
+  while (1) {
+    pp_eval_skip_ws();
+    if (*pp_eval_p == '*') { pp_eval_p++; v = v * pp_eval_unary(); }
+    else if (*pp_eval_p == '/') { long r; pp_eval_p++; r = pp_eval_unary(); v = r ? v / r : 0; }
+    else if (*pp_eval_p == '%') { long r; pp_eval_p++; r = pp_eval_unary(); v = r ? v % r : 0; }
+    else return v;
+  }
+}
+
+long pp_eval_add() {
+  long v = pp_eval_mul();
+  while (1) {
+    pp_eval_skip_ws();
+    if (*pp_eval_p == '+') { pp_eval_p++; v = v + pp_eval_mul(); }
+    else if (*pp_eval_p == '-') { pp_eval_p++; v = v - pp_eval_mul(); }
+    else return v;
+  }
+}
+
+long pp_eval_shift() {
+  long v = pp_eval_add();
+  while (1) {
+    pp_eval_skip_ws();
+    if (pp_eval_p[0] == '<' && pp_eval_p[1] == '<') { pp_eval_p += 2; v = v << pp_eval_add(); }
+    else if (pp_eval_p[0] == '>' && pp_eval_p[1] == '>') { pp_eval_p += 2; v = v >> pp_eval_add(); }
+    else return v;
+  }
+}
+
+long pp_eval_rel() {
+  long v = pp_eval_shift();
+  while (1) {
+    pp_eval_skip_ws();
+    if (pp_eval_match("<=")) v = v <= pp_eval_shift();
+    else if (pp_eval_match(">=")) v = v >= pp_eval_shift();
+    else if (*pp_eval_p == '<') { pp_eval_p++; v = v < pp_eval_shift(); }
+    else if (*pp_eval_p == '>') { pp_eval_p++; v = v > pp_eval_shift(); }
+    else return v;
+  }
+}
+
+long pp_eval_eq() {
+  long v = pp_eval_rel();
+  while (1) {
+    pp_eval_skip_ws();
+    if (pp_eval_match("==")) v = v == pp_eval_rel();
+    else if (pp_eval_match("!=")) v = v != pp_eval_rel();
+    else return v;
+  }
+}
+
+long pp_eval_band() {
+  long v = pp_eval_eq();
+  while (1) {
+    pp_eval_skip_ws();
+    if (*pp_eval_p == '&' && pp_eval_p[1] != '&') { pp_eval_p++; v = v & pp_eval_eq(); }
+    else return v;
+  }
+}
+
+long pp_eval_bxor() {
+  long v = pp_eval_band();
+  while (1) {
+    pp_eval_skip_ws();
+    if (*pp_eval_p == '^') { pp_eval_p++; v = v ^ pp_eval_band(); }
+    else return v;
+  }
+}
+
+long pp_eval_bor() {
+  long v = pp_eval_bxor();
+  while (1) {
+    pp_eval_skip_ws();
+    if (*pp_eval_p == '|' && pp_eval_p[1] != '|') { pp_eval_p++; v = v | pp_eval_bxor(); }
+    else return v;
+  }
+}
+
+long pp_eval_land() {
+  long v = pp_eval_bor();
+  while (1) {
+    pp_eval_skip_ws();
+    if (pp_eval_match("&&")) {
+      long r = pp_eval_bor();
+      v = (v && r) ? 1 : 0;
+    } else return v;
+  }
+}
+
+long pp_eval_lor() {
+  long v = pp_eval_land();
+  while (1) {
+    pp_eval_skip_ws();
+    if (pp_eval_match("||")) {
+      long r = pp_eval_land();
+      v = (v || r) ? 1 : 0;
+    } else return v;
+  }
+}
+
+long pp_eval_expr() {
+  long v = pp_eval_lor();
+  pp_eval_skip_ws();
+  if (*pp_eval_p == '?') {
+    long t;
+    long e;
+    pp_eval_p++;
+    t = pp_eval_expr();
+    pp_eval_skip_ws();
+    if (*pp_eval_p == ':') pp_eval_p++;
+    e = pp_eval_expr();
+    v = v ? t : e;
+  }
+  return v;
+}
+
+int pp_eval_if_expr(char *p) {
+  pp_eval_p = p;
+  return pp_eval_expr() != 0;
+}
+
 // --- Lexer ---
 enum {
   TK_NUM = 256, TK_FLOAT_LIT, TK_ID, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_SWITCH, TK_CASE, TK_DEFAULT, TK_BREAK, TK_CONTINUE, TK_RETURN, 
-  TK_INT, TK_VOID, TK_CHAR, TK_FLOAT,
+  TK_DO, TK_GOTO, TK_INT, TK_VOID, TK_CHAR, TK_FLOAT,
   TK_EQ, TK_NE, TK_LE, TK_GE, TK_LOGIC_AND, TK_LOGIC_OR, TK_INC, TK_DEC, TK_ARROW, TK_STR, TK_SIZEOF,
-  TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_MOD_ASSIGN, TK_AND_ASSIGN,
+  TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_MOD_ASSIGN, TK_AND_ASSIGN, TK_XOR_ASSIGN, TK_OR_ASSIGN,
   TK_EOF
 };
 
@@ -93,11 +341,14 @@ typedef struct {
 typedef struct Symbol Symbol;
 typedef struct UserTypeDef UserTypeDef;
 typedef struct TypedefAlias TypedefAlias;
+typedef struct GlobalSymbol GlobalSymbol;
 
 typedef struct CompilerGlobalState {
   Macro *macros;
   char *src_stack[CC_CFG_PP_SRC_STACK_MAX];
   int src_ptr;
+  char *include_dirs[32];
+  int include_dir_count;
   char *src;
   char *src_base;
   Token token;
@@ -111,6 +362,11 @@ typedef struct CompilerGlobalState {
   int elf_cur_fn_is_variadic;
   int elf_cur_fn_arg_home_base;
   char *elf_cur_fn_name;
+  int elf_debug_enabled;
+  char *elf_debug_source_path;
+  char *elf_debug_comp_dir;
+  GlobalSymbol *user_globals;
+  int user_global_storage_size;
 } CompilerGlobalState;
 
 char *src;
@@ -122,6 +378,8 @@ int local_stack_size = 0;
 UserTypeDef *user_types = NULL;
 TypedefAlias *typedef_aliases = NULL;
 int anon_type_counter = 0;
+GlobalSymbol *user_globals = NULL;
+int user_global_storage_size = 0;
 
 char *tok_name(int t) {
   switch (t) {
@@ -138,6 +396,8 @@ char *tok_name(int t) {
     case TK_BREAK: return (char *)"TK_BREAK";
     case TK_CONTINUE: return (char *)"TK_CONTINUE";
     case TK_RETURN: return (char *)"TK_RETURN";
+    case TK_DO: return (char *)"TK_DO";
+    case TK_GOTO: return (char *)"TK_GOTO";
     case TK_INT: return (char *)"TK_INT";
     case TK_VOID: return (char *)"TK_VOID";
     case TK_CHAR: return (char *)"TK_CHAR";
@@ -159,6 +419,8 @@ char *tok_name(int t) {
     case TK_DIV_ASSIGN: return (char *)"TK_DIV_ASSIGN";
     case TK_MOD_ASSIGN: return (char *)"TK_MOD_ASSIGN";
     case TK_AND_ASSIGN: return (char *)"TK_AND_ASSIGN";
+    case TK_XOR_ASSIGN: return (char *)"TK_XOR_ASSIGN";
+    case TK_OR_ASSIGN: return (char *)"TK_OR_ASSIGN";
     case TK_EOF: return (char *)"TK_EOF";
     default: break;
   }
@@ -198,6 +460,8 @@ int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "TK_BREAK")) { *out = TK_BREAK; return 1; }
   if (!strcmp(name, "TK_CONTINUE")) { *out = TK_CONTINUE; return 1; }
   if (!strcmp(name, "TK_RETURN")) { *out = TK_RETURN; return 1; }
+  if (!strcmp(name, "TK_DO")) { *out = TK_DO; return 1; }
+  if (!strcmp(name, "TK_GOTO")) { *out = TK_GOTO; return 1; }
   if (!strcmp(name, "TK_INT")) { *out = TK_INT; return 1; }
   if (!strcmp(name, "TK_VOID")) { *out = TK_VOID; return 1; }
   if (!strcmp(name, "TK_CHAR")) { *out = TK_CHAR; return 1; }
@@ -219,6 +483,8 @@ int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "TK_DIV_ASSIGN")) { *out = TK_DIV_ASSIGN; return 1; }
   if (!strcmp(name, "TK_MOD_ASSIGN")) { *out = TK_MOD_ASSIGN; return 1; }
   if (!strcmp(name, "TK_AND_ASSIGN")) { *out = TK_AND_ASSIGN; return 1; }
+  if (!strcmp(name, "TK_XOR_ASSIGN")) { *out = TK_XOR_ASSIGN; return 1; }
+  if (!strcmp(name, "TK_OR_ASSIGN")) { *out = TK_OR_ASSIGN; return 1; }
   if (!strcmp(name, "TK_EOF")) { *out = TK_EOF; return 1; }
 
   if (!strcmp(name, "ND_NUM")) { *out = 0; return 1; }
@@ -264,6 +530,10 @@ int lookup_named_constant(const char *name, int *out) {
   if (!strcmp(name, "ND_BNOT")) { *out = 40; return 1; }
   if (!strcmp(name, "ND_COMMA")) { *out = 41; return 1; }
   if (!strcmp(name, "ND_BITOR")) { *out = 42; return 1; }
+  if (!strcmp(name, "ND_BITXOR")) { *out = 43; return 1; }
+  if (!strcmp(name, "ND_DO")) { *out = 44; return 1; }
+  if (!strcmp(name, "ND_GOTO")) { *out = 45; return 1; }
+  if (!strcmp(name, "ND_LABEL")) { *out = 46; return 1; }
   return 0;
 }
 
@@ -275,55 +545,54 @@ void push_src_state(char *resume_src) {
   src_stack[src_ptr++] = resume_src;
 }
 
+int open_include_from_dir(const char *dir, const char *path) {
+  size_t dlen = strlen(dir);
+  size_t plen = strlen(path);
+  int need_slash = 1;
+  char *full;
+  int fd;
+  if (dlen > 0 && dir[dlen - 1] == '/') need_slash = 0;
+  full = malloc(dlen + (size_t)need_slash + plen + 1);
+  if (!full) return -1;
+  memcpy(full, dir, dlen);
+  if (need_slash) full[dlen++] = '/';
+  memcpy(full + dlen, path, plen + 1);
+  fd = open(full, O_RDONLY, 0);
+  free(full);
+  return fd;
+}
+
+int open_include_file(const char *path, int include_dir_only) {
+  int fd = -1;
+  int i = 0;
+  if (!include_dir_only) {
+    fd = open(path, O_RDONLY, 0);
+    if (fd >= 0) return fd;
+  }
+  while (i < include_dir_count) {
+    fd = open_include_from_dir(include_dirs[i], path);
+    if (fd >= 0) return fd;
+    i++;
+  }
+  fd = open_include_from_dir("include", path);
+  if (fd >= 0) return fd;
+  if (!include_dir_only) {
+    fd = open_include_from_dir("src", path);
+    if (fd >= 0) return fd;
+  }
+  return -1;
+}
+
 char *read_source_file_for_include(const char *path, int include_dir_only) {
   int fd = -1;
-  char *fallback = NULL;
-  char *fallback_src = NULL;
   size_t cap = CC_CFG_IO_BUFFER_INIT;
   size_t len = 0;
   char *buf;
-  if (include_dir_only) {
-    size_t n = strlen(path);
-    fallback = malloc(n + 9);
-    if (!fallback) return NULL;
-    memcpy(fallback, "include/", 8);
-    memcpy(fallback + 8, path, n + 1);
-    fd = open(fallback, O_RDONLY, 0);
-    if (fd < 0) {
-      free(fallback);
-      return NULL;
-    }
-  } else {
-    fd = open(path, O_RDONLY, 0);
-    if (fd < 0) {
-      size_t n = strlen(path);
-      fallback = malloc(n + 9);
-      if (!fallback) return NULL;
-      memcpy(fallback, "include/", 8);
-      memcpy(fallback + 8, path, n + 1);
-      fd = open(fallback, O_RDONLY, 0);
-      if (fd < 0) {
-        fallback_src = malloc(n + 5);
-        if (!fallback_src) {
-          free(fallback);
-          return NULL;
-        }
-        memcpy(fallback_src, "src/", 4);
-        memcpy(fallback_src + 4, path, n + 1);
-        fd = open(fallback_src, O_RDONLY, 0);
-        if (fd < 0) {
-          free(fallback);
-          free(fallback_src);
-          return NULL;
-        }
-      }
-    }
-  }
+  fd = open_include_file(path, include_dir_only);
+  if (fd < 0) return NULL;
   buf = malloc(cap + 1);
   if (!buf) {
     close(fd);
-    if (fallback) free(fallback);
-    if (fallback_src) free(fallback_src);
     return NULL;
   }
   while (1) {
@@ -335,8 +604,6 @@ char *read_source_file_for_include(const char *path, int include_dir_only) {
       if (!nb) {
         free(buf);
         close(fd);
-        if (fallback) free(fallback);
-        if (fallback_src) free(fallback_src);
         return NULL;
       }
       buf = nb;
@@ -345,23 +612,69 @@ char *read_source_file_for_include(const char *path, int include_dir_only) {
     if (n < 0) {
       free(buf);
       close(fd);
-      if (fallback) free(fallback);
-      if (fallback_src) free(fallback_src);
       return NULL;
     }
     if (n == 0) break;
     len += (size_t)n;
   }
   close(fd);
-  if (fallback) free(fallback);
-  if (fallback_src) free(fallback_src);
   buf[len] = 0;
   return buf;
+}
+
+struct GlobalSymbol {
+  char *name;
+  int offset;
+  int size;
+  char *type_name;
+  int ptr_level;
+  int is_array;
+  int has_init;
+  long init_value;
+  char *init_ref;
+  struct GlobalSymbol *next;
+};
+
+int type_size_from_name(const char *s);
+
+GlobalSymbol *find_user_global(const char *name) {
+  for (GlobalSymbol *g = user_globals; g; g = g->next) {
+    if (!strcmp(g->name, name)) return g;
+  }
+  return NULL;
+}
+
+GlobalSymbol *register_user_global(char *name, char *type_name, int ptr_level, int arr_len) {
+  GlobalSymbol *g;
+  int elem_sz;
+  int sz;
+  int is_array = arr_len > 0;
+  if (!name) return NULL;
+  g = find_user_global(name);
+  if (g) return g;
+  elem_sz = (ptr_level > 0) ? 8 : type_size_from_name(type_name);
+  if (elem_sz < 1) elem_sz = 8;
+  if (arr_len < 1) arr_len = 1;
+  sz = elem_sz * arr_len;
+  sz = (sz + 7) & ~7;
+  user_global_storage_size = (user_global_storage_size + 7) & ~7;
+  g = calloc(1, sizeof(GlobalSymbol));
+  g->name = name;
+  g->offset = (int)sizeof(CompilerGlobalState) + user_global_storage_size;
+  g->size = sz;
+  g->type_name = type_name ? type_name : (char *)"int";
+  g->ptr_level = ptr_level + (is_array ? 1 : 0);
+  g->is_array = is_array;
+  g->next = user_globals;
+  user_globals = g;
+  user_global_storage_size += sz;
+  return g;
 }
 
 int lookup_global_info(const char *name, int *offset, const char **type_name, int *ptr_level, int *is_array, int *bytes) {
   CompilerGlobalState probe;
   char *base = (char *)&probe;
+  GlobalSymbol *ug;
   if (!name) return 0;
   if (!strcmp(name, "macros")) {
     if (offset) *offset = (int)((char *)&probe.macros - base);
@@ -385,6 +698,22 @@ int lookup_global_info(const char *name, int *offset, const char **type_name, in
     if (ptr_level) *ptr_level = 0;
     if (is_array) *is_array = 0;
     if (bytes) *bytes = (int)sizeof(probe.src_ptr);
+    return 1;
+  }
+  if (!strcmp(name, "include_dirs")) {
+    if (offset) *offset = (int)((char *)&probe.include_dirs - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 2;
+    if (is_array) *is_array = 1;
+    if (bytes) *bytes = (int)sizeof(probe.include_dirs);
+    return 1;
+  }
+  if (!strcmp(name, "include_dir_count")) {
+    if (offset) *offset = (int)((char *)&probe.include_dir_count - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.include_dir_count);
     return 1;
   }
   if (!strcmp(name, "src")) {
@@ -491,11 +820,60 @@ int lookup_global_info(const char *name, int *offset, const char **type_name, in
     if (bytes) *bytes = (int)sizeof(probe.elf_cur_fn_name);
     return 1;
   }
+  if (!strcmp(name, "elf_debug_enabled")) {
+    if (offset) *offset = (int)((char *)&probe.elf_debug_enabled - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_debug_enabled);
+    return 1;
+  }
+  if (!strcmp(name, "elf_debug_source_path")) {
+    if (offset) *offset = (int)((char *)&probe.elf_debug_source_path - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_debug_source_path);
+    return 1;
+  }
+  if (!strcmp(name, "elf_debug_comp_dir")) {
+    if (offset) *offset = (int)((char *)&probe.elf_debug_comp_dir - base);
+    if (type_name) *type_name = "char";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.elf_debug_comp_dir);
+    return 1;
+  }
+  if (!strcmp(name, "user_globals")) {
+    if (offset) *offset = (int)((char *)&probe.user_globals - base);
+    if (type_name) *type_name = "GlobalSymbol";
+    if (ptr_level) *ptr_level = 1;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.user_globals);
+    return 1;
+  }
+  if (!strcmp(name, "user_global_storage_size")) {
+    if (offset) *offset = (int)((char *)&probe.user_global_storage_size - base);
+    if (type_name) *type_name = "int";
+    if (ptr_level) *ptr_level = 0;
+    if (is_array) *is_array = 0;
+    if (bytes) *bytes = (int)sizeof(probe.user_global_storage_size);
+    return 1;
+  }
+  ug = find_user_global(name);
+  if (ug) {
+    if (offset) *offset = ug->offset;
+    if (type_name) *type_name = ug->type_name;
+    if (ptr_level) *ptr_level = ug->ptr_level;
+    if (is_array) *is_array = ug->is_array;
+    if (bytes) *bytes = ug->size;
+    return 1;
+  }
   return 0;
 }
 
 int global_storage_size() {
-  return (int)sizeof(CompilerGlobalState);
+  return (int)sizeof(CompilerGlobalState) + user_global_storage_size;
 }
 
 void next() {
@@ -530,12 +908,22 @@ void next() {
     while (isalpha(*src) && i < 31) buf[i++] = *src++;
     buf[i] = 0;
     cur_active = pp_is_active();
+    if (!strcmp(buf, "if")) {
+      int cond;
+      while (*src == ' ' || *src == '\t') src++;
+      cond = pp_eval_if_expr(src);
+      pp_push_if(cond);
+      while (*src && *src != '\n') src++;
+      if (*src == '\n') src++;
+      next();
+      return;
+    }
     if (!strcmp(buf, "ifdef") || !strcmp(buf, "ifndef")) {
       char *n_start;
       int n_len;
       char *name;
       int cond = 0;
-      while (isspace(*src)) src++;
+      while (*src == ' ' || *src == '\t') src++;
       n_start = src;
       while (isalnum(*src) || *src == '_') src++;
       n_len = src - n_start;
@@ -549,6 +937,30 @@ void next() {
       if (find_macro(name)) cond = 1;
       if (!strcmp(buf, "ifndef")) cond = !cond;
       pp_push_if(cond);
+      while (*src && *src != '\n') src++;
+      if (*src == '\n') src++;
+      next();
+      return;
+    }
+    if (!strcmp(buf, "elif")) {
+      int i;
+      int cond;
+      if (pp_if_top <= 0) {
+        eprintf("Error: #elif without matching #if\n", 0, 0, 0, 0);
+        exit(1);
+      }
+      i = pp_if_top - 1;
+      if (pp_if_else_seen[i]) {
+        eprintf("Error: #elif after #else\n", 0, 0, 0, 0);
+        exit(1);
+      }
+      while (*src == ' ' || *src == '\t') src++;
+      cond = pp_eval_if_expr(src);
+      if (pp_if_cond_true[i]) pp_if_active[i] = 0;
+      else {
+        pp_if_cond_true[i] = cond ? 1 : 0;
+        pp_if_active[i] = pp_if_parent_active[i] && cond;
+      }
       while (*src && *src != '\n') src++;
       if (*src == '\n') src++;
       next();
@@ -575,16 +987,43 @@ void next() {
         next();
         return;
       }
-      while (isspace(*src)) src++;
+      while (*src == ' ' || *src == '\t') src++;
       char *n_start = src; while (isalnum(*src) || *src == '_') src++;
       int n_len = src - n_start; char *name = malloc(n_len + 1);
       memcpy(name, n_start, n_len); name[n_len] = 0;
-      while (isspace(*src)) src++;
+      while (*src == ' ' || *src == '\t') src++;
       char *b_start = src; while (*src && *src != '\n') src++;
       int b_len = src - b_start; char *body = malloc(b_len + 1);
       memcpy(body, b_start, b_len); body[b_len] = 0;
       add_macro(name, body);
       next(); return;
+    }
+    if (!strcmp(buf, "undef")) {
+      char *n_start;
+      int n_len;
+      char *name;
+      if (!cur_active) {
+        while (*src && *src != '\n') src++;
+        if (*src == '\n') src++;
+        next();
+        return;
+      }
+      while (isspace(*src)) src++;
+      n_start = src;
+      while (isalnum(*src) || *src == '_') src++;
+      n_len = src - n_start;
+      name = malloc(n_len + 1);
+      if (!name) {
+        eprintf("Error: out of memory in #undef\n", 0, 0, 0, 0);
+        exit(1);
+      }
+      memcpy(name, n_start, n_len);
+      name[n_len] = 0;
+      undef_macro(name);
+      while (*src && *src != '\n') src++;
+      if (*src == '\n') src++;
+      next();
+      return;
     }
     if (!strcmp(buf, "include")) {
       if (!cur_active) {
@@ -725,6 +1164,8 @@ void next() {
     else if (!strcmp(name, "break")) token.type = TK_BREAK;
     else if (!strcmp(name, "continue")) token.type = TK_CONTINUE;
     else if (!strcmp(name, "return")) token.type = TK_RETURN;
+    else if (!strcmp(name, "do")) token.type = TK_DO;
+    else if (!strcmp(name, "goto")) token.type = TK_GOTO;
     else if (!strcmp(name, "sizeof")) token.type = TK_SIZEOF;
     else if (!strcmp(name, "int")) token.type = TK_INT;
     else if (!strcmp(name, "char")) token.type = TK_CHAR;
@@ -755,14 +1196,32 @@ void next() {
     token.pos = src;
     src++;
     char *start = src;
+    char *out;
+    int oi = 0;
     while (*src && *src != '"') {
       if (*src == '\\' && src[1]) src++;
       src++;
     }
     int len = src - start;
     char *s = malloc(len + 1);
-    memcpy(s, start, len);
-    s[len] = 0;
+    out = s;
+    src = start;
+    while (*src && *src != '"') {
+      if (*src == '\\' && src[1]) {
+        src++;
+        if (*src == 'n') out[oi++] = '\n';
+        else if (*src == 't') out[oi++] = '\t';
+        else if (*src == 'r') out[oi++] = '\r';
+        else if (*src == 'f') out[oi++] = '\f';
+        else if (*src == 'v') out[oi++] = '\v';
+        else if (*src == '0') out[oi++] = '\0';
+        else out[oi++] = *src;
+        if (*src) src++;
+      } else {
+        out[oi++] = *src++;
+      }
+    }
+    s[oi] = 0;
     if (*src == '"') src++;
     token.type = TK_STR;
     token.name = s;
@@ -779,6 +1238,8 @@ void next() {
   if (*src == '/' && src[1] == '=') { src += 2; token.type = TK_DIV_ASSIGN; trace_token(); return; }
   if (*src == '%' && src[1] == '=') { src += 2; token.type = TK_MOD_ASSIGN; trace_token(); return; }
   if (*src == '&' && src[1] == '=') { src += 2; token.type = TK_AND_ASSIGN; trace_token(); return; }
+  if (*src == '^' && src[1] == '=') { src += 2; token.type = TK_XOR_ASSIGN; trace_token(); return; }
+  if (*src == '|' && src[1] == '=') { src += 2; token.type = TK_OR_ASSIGN; trace_token(); return; }
   if (*src == '+' && src[1] == '+') { src += 2; token.type = TK_INC; trace_token(); return; }
   if (*src == '-' && src[1] == '-') { src += 2; token.type = TK_DEC; trace_token(); return; }
   if (*src == '-' && src[1] == '>') { src += 2; token.type = TK_ARROW; trace_token(); return; }
@@ -865,7 +1326,7 @@ typedef enum {
   ND_NUM, ND_ID, ND_ADD, ND_SUB, ND_MUL, ND_DIV, ND_MOD, ND_POW, ND_EQ, ND_NE, ND_LT, ND_LE,
   ND_GT, ND_GE, ND_AND, ND_OR, ND_BITAND, ND_ASSIGN, ND_IF, ND_WHILE, ND_FOR, ND_SWITCH, ND_CASE, ND_DEFAULT, ND_BREAK, ND_CONTINUE, ND_RETURN, 
   ND_BLOCK, ND_FUNC, ND_CALL, ND_VAR, ND_ADDR, ND_DEREF, ND_NOT, ND_NEG, ND_TERNARY, ND_PRE_INC, ND_PRE_DEC, ND_POST_INC, ND_POST_DEC, ND_BNOT, ND_COMMA,
-  ND_BITOR
+  ND_BITOR, ND_BITXOR, ND_DO, ND_GOTO, ND_LABEL
 } NodeKind;
 
 typedef struct Node {
@@ -902,6 +1363,7 @@ Node *switch_stmt();
 Node *assign();
 int is_known_type_name(const char *s);
 Node *bit_or();
+Node *bit_xor();
 
 int is_type_token(int t) {
   return t == TK_INT || t == TK_CHAR || t == TK_FLOAT || t == TK_VOID;
@@ -914,7 +1376,7 @@ int is_type_qualifier_name(const char *s) {
          !strcmp(s, "long") || !strcmp(s, "short") ||
          !strcmp(s, "static") || !strcmp(s, "extern") ||
          !strcmp(s, "typedef") || !strcmp(s, "struct") ||
-         !strcmp(s, "enum");
+         !strcmp(s, "union") || !strcmp(s, "enum");
 }
 
 typedef struct TypeFieldDef {
@@ -949,6 +1411,17 @@ char *dup_cstr(const char *s) {
   p = malloc(n + 1);
   if (!p) return NULL;
   memcpy(p, s, n + 1);
+  return p;
+}
+
+char *concat_cstr(const char *a, const char *b) {
+  size_t na = a ? strlen(a) : 0;
+  size_t nb = b ? strlen(b) : 0;
+  char *p = malloc(na + nb + 1);
+  if (!p) return NULL;
+  if (na) memcpy(p, a, na);
+  if (nb) memcpy(p + na, b, nb);
+  p[na + nb] = 0;
   return p;
 }
 
@@ -1009,6 +1482,56 @@ int resolve_typedef_alias(const char *name, const char **base_name, int *ptr_lev
   return 1;
 }
 
+int parse_record_fields(int is_union, TypeFieldDef **out_fields, int *out_size);
+char *make_anon_type_name();
+
+char *int_macro_body(int v) {
+  char tmp[32];
+  int i = 0;
+  int neg = v < 0;
+  unsigned int n = neg ? (unsigned int)(-v) : (unsigned int)v;
+  char *out;
+  do {
+    tmp[i++] = (char)('0' + (n % 10));
+    n /= 10;
+  } while (n);
+  if (neg) tmp[i++] = '-';
+  out = malloc(i + 1);
+  if (!out) return NULL;
+  for (int j = 0; j < i; j++) out[j] = tmp[i - j - 1];
+  out[i] = 0;
+  return out;
+}
+
+void parse_enum_constants() {
+  int val = 0;
+  while (token.type != TK_EOF && token.type != '}') {
+    if (token.type == TK_ID) {
+      char *name = token.name;
+      next();
+      if (token.type == '=') {
+        next();
+        if (token.type == TK_NUM || token.type == TK_FLOAT_LIT) {
+          val = (int)token.val;
+          next();
+        } else if (token.type == TK_ID) {
+          int cval = 0;
+          if (lookup_named_constant(token.name, &cval)) val = cval;
+          next();
+        }
+      }
+      add_macro(name, int_macro_body(val));
+      val++;
+      if (token.type == ',') {
+        next();
+        continue;
+      }
+      continue;
+    }
+    next();
+  }
+}
+
 int parse_type_base_for_decl(char **base_type_out) {
   int saw = 0;
   char *base = (char *)"int";
@@ -1036,11 +1559,32 @@ int parse_type_base_for_decl(char **base_type_out) {
         continue;
       }
       if (!strcmp(token.name, "struct") || !strcmp(token.name, "union") || !strcmp(token.name, "enum")) {
+        int is_union = !strcmp(token.name, "union");
+        int is_enum = !strcmp(token.name, "enum");
+        char *tag_name = NULL;
         saw = 1;
         next();
         if (token.type == TK_ID) {
+          tag_name = token.name;
           base = token.name;
           next();
+        }
+        if (token.type == '{') {
+          TypeFieldDef *fields = NULL;
+          int rsz = 0;
+          next();
+          if (is_enum) {
+            parse_enum_constants();
+            base = (char *)"int";
+          } else {
+            parse_record_fields(is_union, &fields, &rsz);
+            if (!tag_name) tag_name = make_anon_type_name();
+            register_user_type(tag_name, rsz, is_union, fields);
+            base = tag_name;
+          }
+          expect('}');
+        } else if (is_enum) {
+          base = (char *)"int";
         }
         continue;
       }
@@ -1119,6 +1663,29 @@ int parse_record_fields(int is_union, TypeFieldDef **out_fields, int *out_size) 
         if (!is_union) cur_off += fsz;
         if (fsz > max_size) max_size = fsz;
         if (align > max_align) max_align = align;
+      } else if (pptr == 0 && arr_dims == 0) {
+        UserTypeDef *ut = find_user_type(base_type);
+        if (ut && ut->fields) {
+          int elem_sz = type_size_from_name(base_type);
+          int align = elem_sz > 8 ? 8 : elem_sz;
+          int base_off;
+          if (align < 1) align = 1;
+          if (!is_union) cur_off = (cur_off + align - 1) & ~(align - 1);
+          base_off = is_union ? 0 : cur_off;
+          for (TypeFieldDef *sf = ut->fields; sf; sf = sf->next) {
+            TypeFieldDef *f = calloc(1, sizeof(TypeFieldDef));
+            f->name = sf->name;
+            f->offset = base_off + sf->offset;
+            f->type_name = sf->type_name;
+            f->ptr_level = sf->ptr_level;
+            f->is_array = sf->is_array;
+            tail->next = f;
+            tail = f;
+          }
+          if (!is_union) cur_off += elem_sz;
+          if (elem_sz > max_size) max_size = elem_sz;
+          if (align > max_align) max_align = align;
+        }
       }
       if (token.type == ',') { next(); continue; }
       break;
@@ -1205,7 +1772,7 @@ int try_parse_typedef_or_record_decl() {
       int rsz = 0;
       next();
       if (is_enum) {
-        while (token.type != TK_EOF && token.type != '}') next();
+        parse_enum_constants();
         rsz = 4;
       } else {
         parse_record_fields(is_union, &fields, &rsz);
@@ -1260,6 +1827,12 @@ int try_parse_typedef_or_record_decl() {
     }
     if (token.type == ';') next();
     return 1;
+  }
+
+  if (saw_record && token.type != ';') {
+    src = saved_src;
+    token = saved_tok;
+    return 0;
   }
 
   while (token.type != TK_EOF && token.type != ';') next();
@@ -1557,12 +2130,33 @@ Node *parse_decl_stmt(int consume_semi) {
       continue;
     }
     if (token.type == TK_ID && token.name) {
-      if (!strcmp(token.name, "struct") || !strcmp(token.name, "enum")) {
+      if (!strcmp(token.name, "struct") || !strcmp(token.name, "union") || !strcmp(token.name, "enum")) {
+        int is_union = !strcmp(token.name, "union");
+        int is_enum = !strcmp(token.name, "enum");
+        char *tag_name = NULL;
         saw_type = 1;
         next();
         if (token.type == TK_ID) {
+          tag_name = token.name;
           base_type = token.name;
           next();
+        }
+        if (token.type == '{') {
+          TypeFieldDef *fields = NULL;
+          int rsz = 0;
+          next();
+          if (is_enum) {
+            parse_enum_constants();
+            base_type = (char *)"int";
+          } else {
+            parse_record_fields(is_union, &fields, &rsz);
+            if (!tag_name) tag_name = make_anon_type_name();
+            register_user_type(tag_name, rsz, is_union, fields);
+            base_type = tag_name;
+          }
+          expect('}');
+        } else if (is_enum) {
+          base_type = (char *)"int";
         }
         continue;
       }
@@ -1646,7 +2240,7 @@ Node *parse_decl_stmt(int consume_semi) {
     if (token.type == '=') {
       next();
       if (token.type == '{') skip_initializer_brace();
-      else var->lhs = expr();
+      else var->lhs = assign();
     }
 
     cur->next = var;
@@ -1669,6 +2263,84 @@ Node *parse_decl_stmt(int consume_semi) {
 
   blk->body = head.next;
   return blk;
+}
+
+int try_parse_global_var_decl() {
+  char *saved_src = src;
+  Token saved_tok = token;
+  char *base_type = (char *)"int";
+  int saw_any = 0;
+
+  if (!parse_type_base_for_decl(&base_type)) return 0;
+
+  while (token.type != TK_EOF) {
+    int ptr = 0;
+    int arr_len = 0;
+    char *name = NULL;
+    while (token.type == '*') { ptr++; next(); }
+    if (token.type != TK_ID) {
+      src = saved_src;
+      token = saved_tok;
+      return 0;
+    }
+    name = token.name;
+    next();
+    if (token.type == '(') {
+      src = saved_src;
+      token = saved_tok;
+      return 0;
+    }
+    while (token.type == '[') {
+      int n = 1;
+      next();
+      if (token.type != ']') {
+        if (token.type == TK_NUM || token.type == TK_FLOAT_LIT) {
+          n = (int)token.val;
+          next();
+        } else {
+          (void)expr();
+        }
+      }
+      expect(']');
+      if (n < 1) n = 1;
+      if (arr_len < 1) arr_len = 1;
+      arr_len *= n;
+    }
+    GlobalSymbol *g = register_user_global(name, base_type, ptr, arr_len);
+    saw_any = 1;
+
+    if (token.type == '=') {
+      next();
+      if (token.type == '{') skip_initializer_brace();
+      else if (token.type == '&') {
+        next();
+        if (token.type == TK_ID && g) {
+          g->has_init = 1;
+          g->init_ref = token.name;
+          next();
+        }
+      } else if ((token.type == TK_NUM || token.type == TK_FLOAT_LIT) && g) {
+        g->has_init = 1;
+        g->init_value = token.val;
+        next();
+      } else {
+        (void)assign();
+      }
+    }
+    if (token.type == ',') {
+      next();
+      continue;
+    }
+    break;
+  }
+
+  if (!saw_any || token.type != ';') {
+    src = saved_src;
+    token = saved_tok;
+    return 0;
+  }
+  next();
+  return 1;
 }
 
 Node *primary() {
@@ -1704,11 +2376,16 @@ Node *primary() {
   }
   if (token.type == TK_STR) {
     Node *node = new_node(ND_NUM);
+    char *s = token.name;
     node->val = 0;
-    node->name = token.name;
     node->type_name = (char *)"char";
     node->ptr_level = 1;
     next();
+    while (token.type == TK_STR) {
+      s = concat_cstr(s, token.name);
+      next();
+    }
+    node->name = s;
     return node;
   }
   long off = src_base ? (long)(src - src_base) : -1;
@@ -2097,9 +2774,23 @@ Node *bit_and() {
 }
 
 Node *bit_or() {
-  Node *node = bit_and();
+  Node *node = bit_xor();
   while (token.type == '|') {
     Node *n = new_node(ND_BITOR);
+    next();
+    n->lhs = node;
+    n->rhs = bit_xor();
+    n->type_name = (char *)"int";
+    n->ptr_level = 0;
+    node = n;
+  }
+  return node;
+}
+
+Node *bit_xor() {
+  Node *node = bit_and();
+  while (token.type == '^') {
+    Node *n = new_node(ND_BITXOR);
     next();
     n->lhs = node;
     n->rhs = bit_and();
@@ -2151,7 +2842,8 @@ Node *assign() {
   } else if (token.type == TK_ADD_ASSIGN || token.type == TK_SUB_ASSIGN ||
              token.type == TK_MUL_ASSIGN || token.type == TK_DIV_ASSIGN ||
              token.type == TK_MOD_ASSIGN ||
-             token.type == TK_AND_ASSIGN) {
+             token.type == TK_AND_ASSIGN || token.type == TK_XOR_ASSIGN ||
+             token.type == TK_OR_ASSIGN) {
     int op = ND_ADD;
     Node *n = new_node(ND_ASSIGN);
     Node *lhs_copy;
@@ -2161,8 +2853,25 @@ Node *assign() {
     else if (token.type == TK_DIV_ASSIGN) op = ND_DIV;
     else if (token.type == TK_MOD_ASSIGN) op = ND_MOD;
     else if (token.type == TK_AND_ASSIGN) op = ND_BITAND;
+    else if (token.type == TK_XOR_ASSIGN) op = ND_BITXOR;
+    else if (token.type == TK_OR_ASSIGN) op = ND_BITOR;
     next();
     rhs_node = assign();
+    if ((op == ND_ADD || op == ND_SUB) && node->ptr_level > 0 && rhs_node && rhs_node->ptr_level == 0) {
+      int esz = pointee_size(node->type_name, node->ptr_level);
+      if (esz > 1) {
+        Node *m = new_node(ND_MUL);
+        Node *cn = new_node(ND_NUM);
+        cn->val = esz;
+        cn->type_name = (char *)"int";
+        cn->ptr_level = 0;
+        m->lhs = rhs_node;
+        m->rhs = cn;
+        m->type_name = (char *)"int";
+        m->ptr_level = 0;
+        rhs_node = m;
+      }
+    }
     lhs_copy = clone_node_shallow(node);
     n->lhs = node;
     n->rhs = new_node(op);
@@ -2194,6 +2903,18 @@ Node *expr() {
 Node *stmt() {
   if (token.type == ';') { next(); return new_node(ND_BLOCK); }
   if (try_parse_typedef_or_record_decl()) return new_node(ND_BLOCK);
+  if (token.type == TK_ID) {
+    char *p = src;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == ':') {
+      Node *node = new_node(ND_LABEL);
+      node->name = token.name;
+      src = p + 1;
+      next();
+      node->body = stmt();
+      return node;
+    }
+  }
   if (token.type == TK_IF) {
     next(); expect('('); Node *node = new_node(ND_IF); node->cond = expr(); expect(')');
     node->then = stmt();
@@ -2203,6 +2924,17 @@ Node *stmt() {
   if (token.type == TK_WHILE) {
     next(); expect('('); Node *node = new_node(ND_WHILE); node->cond = expr(); expect(')');
     node->body = stmt();
+    return node;
+  }
+  if (token.type == TK_DO) {
+    Node *node = new_node(ND_DO);
+    next();
+    node->body = stmt();
+    expect(TK_WHILE);
+    expect('(');
+    node->cond = expr();
+    expect(')');
+    expect(';');
     return node;
   }
   if (token.type == TK_FOR) {
@@ -2216,6 +2948,18 @@ Node *stmt() {
     node->body = stmt(); return node;
   }
   if (token.type == TK_SWITCH) return switch_stmt();
+  if (token.type == TK_GOTO) {
+    Node *node = new_node(ND_GOTO);
+    next();
+    if (token.type != TK_ID) {
+      eprintf("Error: expected label after goto\n", 0, 0, 0, 0);
+      exit(1);
+    }
+    node->name = token.name;
+    next();
+    expect(';');
+    return node;
+  }
   if (token.type == TK_BREAK) { next(); Node *node = new_node(ND_BREAK); expect(';'); return node; }
   if (token.type == TK_CONTINUE) { next(); Node *node = new_node(ND_CONTINUE); expect(';'); return node; }
   if (token.type == TK_RETURN) {
@@ -2488,12 +3232,15 @@ Node *parse_program_functions(char *source) {
   src_base = source;
   src_ptr = 0;
   macros = NULL;
+  user_globals = NULL;
+  user_global_storage_size = 0;
   next();
 
   Node head = {0};
   Node *cur = &head;
   while (token.type != TK_EOF) {
     if (try_parse_typedef_or_record_decl()) continue;
+    if (try_parse_global_var_decl()) continue;
     Node *fn = function();
     if (fn) {
       cur->next = fn;
